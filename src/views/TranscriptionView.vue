@@ -1375,7 +1375,7 @@ onUnmounted(() => {
   <TooltipProvider :delay-duration="120">
     <div
       v-if="showTranscriptResult"
-      class="flex h-[calc(100svh-72px)] w-full max-w-full flex-col overflow-hidden bg-muted text-foreground"
+      class="flex min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-muted text-foreground"
     >
       <header
         class="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-5 py-3"
@@ -1822,7 +1822,7 @@ onUnmounted(() => {
     <!-- Active live session: full-height layout matching transcript result -->
     <div
       v-else-if="showActiveLiveSession"
-      class="flex h-[calc(100svh-72px)] w-full max-w-full flex-col overflow-hidden bg-muted text-foreground"
+      class="flex min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-muted text-foreground"
     >
       <header
         class="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-5 py-3"
@@ -2057,7 +2057,7 @@ onUnmounted(() => {
 
     <div
       v-else
-      class="transcription-page relative mx-auto flex h-[calc(100svh-72px)] w-full flex-col bg-muted"
+      class="transcription-page relative mx-auto flex min-h-0 w-full flex-1 flex-col bg-muted"
     >
       <div v-if="!store.isProcessing" class="absolute right-5 top-5 z-20">
         <TranscriptionSettingsPanel
