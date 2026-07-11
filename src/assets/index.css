@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@config "../../tailwind.config.js";
+
+@layer base {
+  :root {
+    /* Surface contract:
+			   - --muted is the app canvas (the warm page field).
+			   - --card/--background/--popover are paper/control surfaces.
+			   - Subtle bg-foreground/[x] overlays create ink washes on either host.
+			   The paper tokens intentionally match so nested bg-background controls
+			   do not show a faint seam on bg-card surfaces. HSL triplets to match the
+			   hsl(var(--x)) pipeline. */
+    --background: 40 20% 99%;
+    --foreground: 28 14% 15%;
+
+    --muted: 40 20% 97%;
+    --muted-foreground: 32 10% 38%;
+
+    --popover: 40 20% 99%;
+    --popover-foreground: 28 14% 15%;
+
+    --card: 40 20% 99%;
+    --card-foreground: 28 14% 15%;
+
+    --border: 38 20% 88%;
+    --input: 38 20% 88%;
+
+    /* Near-black graphite "ink" accent (faint warm tint so it sits on the warm
+		   paper without a cool clash). Paper --primary-foreground passes AA easily. */
+    --primary: 30 7% 16%;
+    --primary-foreground: 40 20% 99%;
+
+    --secondary: 40 22% 93%;
+    --secondary-foreground: 28 14% 15%;
+
+    --accent: 40 22% 93%;
+    --accent-foreground: 28 14% 15%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 40 20% 99%;
+
+    --warning: 34 80% 30%;
+    --warning-foreground: 40 20% 99%;
+
+    --ring: 30 7% 16%;
+
+    --radius: 0.625rem;
+
+    --font-sans:
+      "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+      Roboto, Helvetica, Arial, sans-serif;
+    --font-mono:
+      "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo,
+      Consolas, monospace;
+
+    /*
+		 * Conversation type scale.
+		 * `--text-reading` is the shared reading size for prose and the chat
+		 * input surfaces (markdown body, prompt bubble, composer input). It sits
+		 * deliberately between Tailwind's text-sm (0.875rem) and text-base (1rem).
+		 * `--text-code` is smaller for mono (inline chips + fenced blocks), which
+		 * reads visually larger than the proportional font at the same size. It
+		 * sits between Tailwind's text-xs (0.75rem) and text-sm (0.875rem).
+		 */
+    --text-reading: 0.9125rem;
+    --text-code: 0.8rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+
+  html {
+    font-size: 15.5px;
+  }
+
+  @media (min-width: 480px) {
+    html {
+      font-size: 16.5px;
+    }
+  }
+}
+
+/*
+ * Chat canvas ("reserve white") overrides.
+ * The chat conversation column carries the warm page tone; white is reserved for
+ * elevated surfaces. The markdown renderer and ModelNoticeBanner are shared with
+ * GenerationView (which hosts them on white cards and wants them recessed), so we
+ * scope these surface flips to `.chat-paper` rather than forking the components.
+ */
+.chat-paper .code-block-wrapper,
+.chat-paper .code-block-wrapper pre {
+  background-color: hsl(var(--card));
+}
+
+.chat-paper .code-block-wrapper pre code {
+  background-color: transparent;
+}
+
+.chat-paper .markdown-body :not(pre) > code {
+  background-color: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+}
+
+/*
+ * Chat notice strip: keep the attached banner transparent so the tinted wrapper
+ * container (`bg-muted/60` in ChatView) shows through as one uniform strip,
+ * distinct from the white composer card below. Previously this forced the banner
+ * to `bg-card`, which repainted it white on top of the wrapper tint and left the
+ * wrapper colour peeking only at the edges (a thin frame).
+ */
+.chat-paper .model-notice-banner {
+  background-color: transparent;
+  border-color: hsl(var(--border));
+}

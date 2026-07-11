@@ -1,0 +1,49 @@
+{
+  "name": "promptpal-transcribe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck:js": "tsc -p tsconfig.jsdoc.json",
+    "typecheck:vue": "vue-tsc -p tsconfig.vue.json",
+    "typecheck": "npm run typecheck:js && npm run typecheck:vue",
+    "format": "prettier --write \"src/**/*.{js,ts,vue,css,json,md}\" \"*.{js,json,md}\" \"docs/**/*.md\"",
+    "format:check": "prettier --check \"src/**/*.{js,ts,vue,css,json,md}\" \"*.{js,json,md}\" \"docs/**/*.md\"",
+    "check:boundaries": "node scripts/check-boundaries.js"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "@ffmpeg/util": "0.12.2",
+    "@gooney-001/ten-vad-lib": "1.0.2",
+    "class-variance-authority": "0.7.0",
+    "clsx": "2.1.1",
+    "dexie": "4.0.8",
+    "file-saver": "2.0.5",
+    "lucide-vue-next": "0.408.0",
+    "onnxruntime-web": "1.24.3",
+    "parakeet.js": "1.4.4",
+    "pinia": "2.1.7",
+    "reka-ui": "2.8.0",
+    "tailwind-merge": "2.4.0",
+    "tailwindcss-animate": "1.0.7",
+    "uuid": "14.0.0",
+    "vue": "3.5.27",
+    "vue-router": "4.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.2.4",
+    "@types/node": "20.19.39",
+    "@vitejs/plugin-vue": "6.0.6",
+    "fake-indexeddb": "6.2.5",
+    "prettier": "3.8.3",
+    "tailwindcss": "4.2.4",
+    "typescript": "5.5.4",
+    "vite": "8.1.1",
+    "vitest": "4.1.5",
+    "vue-tsc": "3.2.5"
+  }
+}
