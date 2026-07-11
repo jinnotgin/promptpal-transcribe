@@ -9,7 +9,7 @@ provide("toast", toast);
 </script>
 
 <template>
-  <div class="flex min-h-svh flex-col bg-muted text-foreground">
+  <div class="flex h-svh flex-col overflow-hidden bg-muted text-foreground">
     <header
       class="flex h-10 shrink-0 items-center border-b border-border bg-card px-4 sm:px-5"
     >
