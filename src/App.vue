@@ -11,7 +11,7 @@ provide("toast", toast);
 <template>
   <div class="flex min-h-svh flex-col bg-muted text-foreground">
     <header
-      class="flex h-12 shrink-0 items-center border-b border-border bg-card px-4 sm:px-5"
+      class="flex h-10 shrink-0 items-center border-b border-border bg-card px-4 sm:px-5"
     >
       <div class="flex min-w-0 items-center gap-2">
         <img
