@@ -1496,10 +1496,7 @@ onUnmounted(() => {
         <main
           class="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-card"
         >
-          <ScrollArea
-            class="min-h-0 min-w-0 flex-1"
-            :class="store.audioUrl ? 'pb-28' : 'pb-6'"
-          >
+          <ScrollArea class="min-h-0 min-w-0 flex-1">
             <div
               class="mx-auto w-full max-w-full px-4 pb-10 pt-8 sm:px-6 lg:max-w-5xl"
             >
@@ -1588,7 +1585,7 @@ onUnmounted(() => {
 
           <div
             v-if="store.audioUrl"
-            class="absolute inset-x-0 bottom-0 max-w-full overflow-hidden border-t border-border bg-card/95 px-4 pb-4 pt-3 shadow-[0_-8px_24px_rgba(15,23,42,0.05)] backdrop-blur sm:px-5"
+            class="max-w-full shrink-0 overflow-hidden border-t border-border bg-card/95 px-4 pb-4 pt-3 shadow-[0_-8px_24px_rgba(15,23,42,0.05)] backdrop-blur sm:px-5"
           >
             <span
               v-if="isLiveRecordingExporting"
