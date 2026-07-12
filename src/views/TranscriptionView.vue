@@ -287,6 +287,12 @@ const totalPlaybackLabel = computed(() => {
   const audio = audioRef.value;
   return formatDuration(audio?.duration || store.fileDuration || 0) || "0:00";
 });
+// Reserve exactly "<total> / <total>" so the label never wraps or jitters as the
+// current time gains digits — font-mono makes every character 1ch wide.
+const playbackLabelMinWidth = computed(() => {
+  const total = totalPlaybackLabel.value || "0:00";
+  return `${total.length * 2 + 3}ch`;
+});
 const activeSegmentId = computed(() => {
   const time = currentPlaybackTime.value;
   const active = filteredSegments.value.find(
@@ -1706,7 +1712,8 @@ onUnmounted(() => {
                 />
               </div>
               <span
-                class="w-[8.25rem] shrink-0 whitespace-nowrap text-right font-mono text-xs text-muted-foreground"
+                class="shrink-0 whitespace-nowrap text-right font-mono text-xs text-muted-foreground"
+                :style="{ minWidth: playbackLabelMinWidth }"
               >
                 {{ currentPlaybackLabel }} /
                 {{ totalPlaybackLabel || fileDurationLabel }}
