@@ -8,6 +8,9 @@
  * unit-test the derivation logic without IndexedDB.
  */
 
+import { normalizeWaveformSamples } from "./waveformAccumulator.js";
+import { normalizeTranscriptAudioManifest } from "./transcriptAudioManifest.js";
+
 /**
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment} TranscriptSegment
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSummary} TranscriptSummary
@@ -146,29 +149,38 @@ export function buildSummary(entry) {
  * Build the heavy payload row stored in the `transcriptPayloads` table.
  * @param {{
  *   id: string,
- *   audioBlob?: Blob | null,
  *   audioMimeType?: string | null,
  *   audioFileName?: string | null,
+ *   audioManifest?: import('./transcriptAudioManifest.js').TranscriptAudioManifest | null,
  *   fileName?: string,
  *   segments?: TranscriptSegment[],
  *   speakerNames?: Record<string, string>,
  *   speakerColors?: Record<string, string>,
  *   addedSpeakerIds?: string[],
+ *   waveformSamples?: number[],
  * }} entry
  * @returns {TranscriptPayload}
  */
 export function buildPayload(entry) {
-  const audioBlob = entry.audioBlob ?? new Blob();
+  const audioManifest = entry.audioManifest
+    ? normalizeTranscriptAudioManifest(entry.audioManifest)
+    : null;
   return {
     id: entry.id,
-    audioBlob,
-    audioMimeType: entry.audioMimeType ?? audioBlob.type ?? "audio/mpeg",
-    audioFileName: entry.audioFileName ?? entry.fileName ?? "transcript-audio",
+    ...(audioManifest
+      ? {
+          audioMimeType: entry.audioMimeType ?? audioManifest.parts[0].mimeType,
+          audioFileName:
+            entry.audioFileName ?? entry.fileName ?? "transcript-audio",
+          audioManifest,
+        }
+      : {}),
     segments: serializeSegments(entry.segments),
     speakerNames: { ...(entry.speakerNames ?? {}) },
     speakerColors: { ...(entry.speakerColors ?? {}) },
     addedSpeakerIds: Array.isArray(entry.addedSpeakerIds)
       ? [...entry.addedSpeakerIds]
       : [],
+    waveformSamples: normalizeWaveformSamples(entry.waveformSamples),
   };
 }

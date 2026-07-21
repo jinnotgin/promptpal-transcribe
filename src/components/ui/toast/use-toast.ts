@@ -75,11 +75,6 @@ const state = ref<State>({
 function dispatch(action: Action) {
   switch (action.type) {
     case actionTypes.ADD_TOAST:
-      // reka-ui's ToastRootProps is deep enough that assigning a freshly built
-      // ToasterToast[] into the reactive state trips TS2589 (excessively deep
-      // type instantiation). The runtime behavior is correct; suppress the known
-      // vendored-component type limitation on this single assignment.
-      // @ts-expect-error TS2589 upstream reka-ui deep type instantiation
       state.value.toasts = [action.toast, ...state.value.toasts].slice(
         0,
         TOAST_LIMIT,

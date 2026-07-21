@@ -1,5 +1,3 @@
-import { assignSpeakersToSegments } from "@/features/transcription/lib/speakerAssignment.js";
-
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
 
 /**
@@ -9,86 +7,109 @@ const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
 export function useDiarization(store) {
   /** @type {Worker | null} */
   let worker = null;
+  let requestSequence = 0;
+  /** @type {Map<number, { resolve: (value: any) => void, reject: (reason?: unknown) => void }>} */
+  const pending = new Map();
+
+  /** @param {'webgpu' | 'wasm'} runtime */
+  async function initialize(runtime) {
+    cleanup();
+    worker = new Worker(
+      new URL("@/workers/diarizationWorker.js", import.meta.url),
+      {
+        type: "module",
+      },
+    );
+    worker.onmessage = handleMessage;
+    worker.onerror = handleWorkerError;
+    worker.onmessageerror = handleMessageError;
+    await request("init", { runtime });
+  }
+
+  /**
+   * @param {Float32Array} pcm
+   * @param {{ windowIndex: number, totalWindows: number }} options
+   */
+  async function processWindow(pcm, options) {
+    const pcmBuffer = pcm.buffer;
+    await request("process-window", { pcmBuffer, ...options }, [pcmBuffer]);
+  }
+
+  /**
+   * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments
+   */
+  async function finalize(segments) {
+    try {
+      const payload = await request("finalize", {
+        segments: segments.map((segment) => ({ ...segment })),
+      });
+      logDiarizationDiagnostics(payload.diagnostics);
+      return payload.segments || segments;
+    } finally {
+      cleanup();
+    }
+  }
 
   /**
    * @param {Float32Array} pcm
    * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments
    * @returns {Promise<import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]>}
    */
-  function diarize(pcm, segments) {
+  async function diarize(pcm, segments) {
+    await initialize(store.effectiveRuntime);
+    await processWindow(pcm, { windowIndex: 0, totalWindows: 1 });
+    return await finalize(segments);
+  }
+
+  function handleMessage(event) {
+    const { type, payload, requestId } = event.data;
+    if (type === "progress") {
+      store.updateProgress("diarization", payload.percent);
+      return;
+    }
+    if (type === "model-progress") {
+      if (payload.percent != null)
+        store.sortformerLoadProgress = payload.percent;
+      return;
+    }
+    if (requestId == null) return;
+    const callback = pending.get(requestId);
+    if (!callback) return;
+    pending.delete(requestId);
+    if (type === "error") callback.reject(new Error(payload.message));
+    else callback.resolve(payload || {});
+  }
+
+  function handleWorkerError(err) {
+    console.error("[transcription][diarization-worker] onerror", err);
+    err?.preventDefault?.();
+    failAll(new Error(`Diarization worker error: ${describeWorkerError(err)}`));
+    cleanup();
+  }
+
+  function handleMessageError(err) {
+    console.error("[transcription][diarization-worker] messageerror", err);
+    failAll(
+      new Error(
+        `Diarization worker message error: ${describeWorkerError(err)}`,
+      ),
+    );
+    cleanup();
+  }
+
+  function request(type, payload, transfer = []) {
+    if (!worker)
+      return Promise.reject(new Error("Diarization worker is not initialized"));
+    const requestId = ++requestSequence;
     return new Promise((resolve, reject) => {
-      worker = new Worker(
-        new URL("@/workers/diarizationWorker.js", import.meta.url),
-        {
-          type: "module",
-        },
-      );
-
-      worker.onmessage = (e) => {
-        const { type, payload } = e.data;
-        switch (type) {
-          case "progress":
-            store.updateProgress("diarization", payload.percent);
-            break;
-          case "model-progress":
-            if (payload.percent != null) {
-              store.sortformerLoadProgress = payload.percent;
-            }
-            break;
-          case "complete":
-            logDiarizationDiagnostics(payload.diagnostics);
-            cleanup();
-            resolve(
-              payload.segments ||
-                assignSpeakersToSegments(segments, payload.assignments || []),
-            );
-            break;
-          case "error":
-            cleanup();
-            reject(new Error(payload.message));
-            break;
-        }
-      };
-
-      worker.onerror = (err) => {
-        console.error("[transcription][diarization-worker] onerror", {
-          message: err?.message,
-          filename: err?.filename,
-          lineno: err?.lineno,
-          colno: err?.colno,
-          error: err?.error,
-          type: err?.type,
-        });
-        err?.preventDefault?.();
-        cleanup();
-        reject(
-          new Error(`Diarization worker error: ${describeWorkerError(err)}`),
-        );
-      };
-
-      worker.onmessageerror = (err) => {
-        console.error("[transcription][diarization-worker] messageerror", err);
-        cleanup();
-        reject(
-          new Error(
-            `Diarization worker message error: ${describeWorkerError(err)}`,
-          ),
-        );
-      };
-
-      const pcmBuffer = pcm.buffer;
-      worker.postMessage(
-        {
-          type: "process",
-          payload: {
-            pcmBuffer,
-            segments: segments.map((segment) => ({ ...segment })),
-            runtime: store.effectiveRuntime,
-          },
-        },
-        [pcmBuffer],
-      );
+      pending.set(requestId, { resolve, reject });
+      worker.postMessage({ type, requestId, payload }, transfer);
     });
+  }
+
+  function failAll(error) {
+    for (const callback of pending.values()) callback.reject(error);
+    pending.clear();
   }
 
   function cleanup() {
@@ -101,11 +122,12 @@ export function useDiarization(store) {
   function abort() {
     if (worker) {
       worker.postMessage({ type: "cancel" });
+      failAll(new DOMException("Aborted", "AbortError"));
       cleanup();
     }
   }
 
-  return { diarize, abort };
+  return { initialize, processWindow, finalize, diarize, abort };
 }
 
 /**

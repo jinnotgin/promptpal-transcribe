@@ -134,12 +134,23 @@ describe("transcriptHistoryRecords", () => {
         fileName: "memo.mp3",
         segments: [segment()],
         speakerNames,
+        waveformSamples: Array.from({ length: 260 }, (_, index) =>
+          index === 0 ? 2 : index === 1 ? Number.NaN : 0.5,
+        ),
       });
       expect(payload.id).toBe("rec-1");
-      expect(payload.audioFileName).toBe("memo.mp3");
+      expect("audioFileName" in payload).toBe(false);
       expect(payload.segments[0].id).toBe("seg-1");
       expect(payload.speakerNames).toEqual(speakerNames);
       expect(payload.speakerNames).not.toBe(speakerNames);
+      expect(payload.waveformSamples).toHaveLength(260);
+      expect(payload.waveformSamples.slice(0, 3)).toEqual([1, 0, 0.5]);
+    });
+
+    it("keeps legacy records lightweight when waveform samples are absent", () => {
+      expect(
+        buildPayload({ id: "legacy", segments: [segment()] }).waveformSamples,
+      ).toEqual([]);
     });
   });
 });

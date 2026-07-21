@@ -23,6 +23,8 @@ export function useAsrInference(store) {
   let worker = null;
   /** @type {Array<Record<string, unknown>>} */
   let asrDiagnostics = [];
+  /** @type {Set<(reason?: unknown) => void>} */
+  const pendingRejections = new Set();
 
   /**
    * Initialize the ASR worker, downloading and loading model files.
@@ -33,16 +35,29 @@ export function useAsrInference(store) {
    * @returns {Promise<void>}
    */
   function initialize(runtime) {
+    rejectPending(new DOMException("Superseded", "AbortError"));
+    cleanup();
     return new Promise((resolve, reject) => {
-      worker = new Worker(new URL("@/workers/asrWorker.js", import.meta.url), {
-        type: "module",
-      });
+      const currentWorker = new Worker(
+        new URL("@/workers/asrWorker.js", import.meta.url),
+        {
+          type: "module",
+        },
+      );
+      worker = currentWorker;
       const assetProgress = new Map();
+      const rejectRequest = (reason) => {
+        pendingRejections.delete(rejectRequest);
+        currentWorker.removeEventListener("message", onMessage);
+        reject(reason);
+      };
+      pendingRejections.add(rejectRequest);
 
       const onMessage = (e) => {
         const { type, payload } = e.data;
         if (type === "ready") {
-          worker?.removeEventListener("message", onMessage);
+          currentWorker.removeEventListener("message", onMessage);
+          pendingRejections.delete(rejectRequest);
           store.parakeetLoadProgress = 100;
           store.parakeetLoadIndeterminate = false;
           resolve();
@@ -69,17 +84,16 @@ export function useAsrInference(store) {
           store.parakeetLoadProgress = payload.percent;
           store.updateProgress("transcription", payload.percent);
         } else if (type === "error") {
-          worker?.removeEventListener("message", onMessage);
-          reject(new Error(payload.message));
+          rejectRequest(new Error(payload.message));
         }
       };
-      worker.addEventListener("message", onMessage);
+      currentWorker.addEventListener("message", onMessage);
 
-      worker.onerror = (err) => {
-        reject(new Error(`ASR worker init error: ${err.message}`));
+      currentWorker.onerror = (err) => {
+        rejectRequest(new Error(`ASR worker init error: ${err.message}`));
       };
 
-      worker.postMessage({
+      currentWorker.postMessage({
         type: "init",
         payload: {
           runtime,
@@ -102,7 +116,16 @@ export function useAsrInference(store) {
    * @returns {Promise<import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]>}
    */
   function processChunk(chunkAudio, chunkStart, chunkIndex, totalChunks) {
+    if (!worker)
+      return Promise.reject(new Error("ASR worker is not initialized"));
+    const currentWorker = worker;
     return new Promise((resolve, reject) => {
+      const rejectRequest = (reason) => {
+        pendingRejections.delete(rejectRequest);
+        currentWorker.removeEventListener("message", onMessage);
+        reject(reason);
+      };
+      pendingRejections.add(rejectRequest);
       const onMessage = (e) => {
         const { type, payload } = e.data;
         switch (type) {
@@ -114,7 +137,8 @@ export function useAsrInference(store) {
             store.updateProgress("transcription", payload.percent);
             break;
           case "partial":
-            worker.removeEventListener("message", onMessage);
+            currentWorker.removeEventListener("message", onMessage);
+            pendingRejections.delete(rejectRequest);
             // Assign IDs and null speaker to raw segments
             const segments = payload.segments.map((seg) => ({
               id: uuidv4(),
@@ -127,15 +151,14 @@ export function useAsrInference(store) {
             resolve(segments);
             break;
           case "error":
-            worker.removeEventListener("message", onMessage);
-            reject(new Error(payload.message));
+            rejectRequest(new Error(payload.message));
             break;
         }
       };
-      worker.addEventListener("message", onMessage);
+      currentWorker.addEventListener("message", onMessage);
 
       const buffer = chunkAudio.buffer;
-      worker.postMessage(
+      currentWorker.postMessage(
         {
           type: "process",
           payload: {
@@ -164,40 +187,7 @@ export function useAsrInference(store) {
     }
     try {
       asrDiagnostics = [];
-
-      // Split regions into processable chunks
-      const chunks = splitIntoChunks(speechRegions, {
-        audioDuration: pcm.length / 16000,
-      });
-
-      // Process chunks sequentially
-      /** @type {Array<{ chunk: import('@/features/transcription/lib/chunkingStrategy').AsrChunk, segments: import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[] }>} */
-      const chunkResults = [];
-
-      for (let i = 0; i < chunks.length; i++) {
-        if (store.isCancelled) {
-          throw new DOMException("Aborted", "AbortError");
-        }
-
-        const chunk = chunks[i];
-        const audio = extractChunkAudio(pcm, chunk);
-        const segments = await processChunk(
-          audio,
-          chunk.start,
-          i,
-          chunks.length,
-        );
-
-        chunkResults.push({ chunk, segments });
-
-        // Stream partial results to store
-        const allSoFar = mergeTranscriptRows(stitchSegments(chunkResults));
-        store.setSegments(allSoFar);
-      }
-
-      // Final stitched result. If diarization is enabled, keep raw ASR
-      // words for the speaker-aware sentence constructor pass.
-      const finalRows = mergeTranscriptRows(stitchSegments(chunkResults));
+      const finalRows = await transcribeWindow(pcm, speechRegions);
       logAsrSummary(finalRows, asrDiagnostics);
       if (store.enableDiarization) return finalRows;
       return await constructTranscriptSegments(finalRows, {
@@ -206,6 +196,66 @@ export function useAsrInference(store) {
     } finally {
       cleanup();
     }
+  }
+
+  /**
+   * Transcribe one bounded PCM preparation window while retaining the ASR
+   * model worker for later windows.
+   * @param {Float32Array} pcm
+   * @param {Array<{ start: number, end: number, preChunked?: boolean }>} speechRegions
+   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number }} [options]
+   */
+  async function transcribeWindow(pcm, speechRegions, options = {}) {
+    if (!worker) {
+      throw new Error(
+        "ASR worker is not initialized; call initialize() first.",
+      );
+    }
+    const offset = Number(options.offset || 0);
+    const windowIndex = Number(options.windowIndex || 0);
+    const totalWindows = Math.max(1, Number(options.totalWindows || 1));
+    const chunks = splitIntoChunks(speechRegions, {
+      audioDuration: pcm.length / 16000,
+    });
+    /** @type {Array<{ chunk: import('@/features/transcription/lib/chunkingStrategy').AsrChunk, segments: import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[] }>} */
+    const chunkResults = [];
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      if (store.isCancelled) throw new DOMException("Aborted", "AbortError");
+      const relativeChunk = chunks[index];
+      const absoluteChunk = {
+        ...relativeChunk,
+        start: relativeChunk.start + offset,
+        end: relativeChunk.end + offset,
+      };
+      const audio = extractChunkAudio(pcm, relativeChunk);
+      const progressIndex = windowIndex * Math.max(1, chunks.length) + index;
+      const progressTotal = totalWindows * Math.max(1, chunks.length);
+      const segments = await processChunk(
+        audio,
+        absoluteChunk.start,
+        progressIndex,
+        progressTotal,
+      );
+      chunkResults.push({ chunk: absoluteChunk, segments });
+    }
+
+    return mergeTranscriptRows(stitchSegments(chunkResults));
+  }
+
+  /** @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments */
+  function mergeSegments(segments) {
+    return mergeTranscriptRows(segments);
+  }
+
+  /**
+   * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments
+   * @param {{ skipDiarize?: boolean }} [options]
+   */
+  async function finalizeSegments(segments, options = {}) {
+    const rows = mergeSegments(segments);
+    if (!options.skipDiarize) return rows;
+    return await constructTranscriptSegments(rows, { skipDiarize: true });
   }
 
   function cleanup() {
@@ -218,11 +268,26 @@ export function useAsrInference(store) {
   function abort() {
     if (worker) {
       worker.postMessage({ type: "cancel" });
-      cleanup();
     }
+    rejectPending(new DOMException("Aborted", "AbortError"));
+    cleanup();
   }
 
-  return { initialize, transcribeChunks, processChunk, cleanup, abort };
+  function rejectPending(reason) {
+    for (const reject of [...pendingRejections]) reject(reason);
+    pendingRejections.clear();
+  }
+
+  return {
+    initialize,
+    transcribeChunks,
+    transcribeWindow,
+    mergeSegments,
+    finalizeSegments,
+    processChunk,
+    cleanup,
+    abort,
+  };
 }
 
 /**
@@ -249,8 +314,6 @@ function logAsrDiagnostics(diagnostics) {
     wordCount: diagnostics.wordCount,
     textLength: diagnostics.textLength,
     utteranceIds: diagnostics.utteranceIds,
-    wordPreview: diagnostics.wordPreview,
-    utteranceTextPreview: diagnostics.utteranceTextPreview,
     metrics: diagnostics.metrics,
   });
 }
@@ -275,9 +338,5 @@ function logAsrSummary(finalRows, diagnostics) {
     rowCount: finalRows.length,
     wordCount: words.length,
     utteranceIds,
-    wordPreview: words
-      .slice(0, 48)
-      .map((word) => word.text)
-      .join(" "),
   });
 }

@@ -38,6 +38,8 @@ export const useTranscriptionStore = defineStore("transcription", {
     fileDuration: null,
     /** @type {string | null} */
     audioUrl: null,
+    /** @type {number[]} Compact normalized waveform envelope. */
+    waveformSamples: [],
 
     // --- Pipeline ---
     /** @type {ProcessPhase} */
@@ -59,8 +61,6 @@ export const useTranscriptionStore = defineStore("transcription", {
     liveElapsed: null,
 
     // --- Progress (0-100 per phase) ---
-    transcodingProgress: 0,
-    vadProgress: 0,
     transcriptionProgress: 0,
     diarizationProgress: 0,
 
@@ -156,6 +156,7 @@ export const useTranscriptionStore = defineStore("transcription", {
       this.speakerColors = {};
       this.addedSpeakerIds = [];
       this.processPhase = "idle";
+      this.waveformSamples = [];
     },
 
     clearFile() {
@@ -167,6 +168,7 @@ export const useTranscriptionStore = defineStore("transcription", {
       this.fileSize = 0;
       this.fileDuration = null;
       this.audioUrl = null;
+      this.waveformSamples = [];
       this.segments = [];
       this.speakerNames = {};
       this.speakerColors = {};
@@ -178,15 +180,13 @@ export const useTranscriptionStore = defineStore("transcription", {
     clearProcessingState() {
       this.processPhase = "idle";
       this.isCancelled = false;
-      this.transcodingProgress = 0;
-      this.vadProgress = 0;
       this.transcriptionProgress = 0;
       this.diarizationProgress = 0;
       this.error = null;
     },
 
     /**
-     * @param {'transcoding' | 'vad' | 'transcription' | 'diarization'} phase
+     * @param {'transcription' | 'diarization'} phase
      * @param {number} value 0-100
      */
     updateProgress(phase, value) {

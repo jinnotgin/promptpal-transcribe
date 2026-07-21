@@ -1,83 +1,8 @@
 /**
- * Audio processing utilities for transcription.
- * All functions operate on raw PCM data — no DOM or Web Audio API dependency.
+ * Audio encoding utilities for already-available transcription PCM.
  */
 
 const TARGET_SAMPLE_RATE = 16000;
-
-/**
- * Resample an AudioBuffer to 16kHz mono Float32Array.
- * Uses OfflineAudioContext for high-quality resampling.
- * @param {AudioBuffer} audioBuffer
- * @returns {Promise<Float32Array>}
- */
-export async function resampleTo16kMono(audioBuffer) {
-  const targetLength = Math.round(
-    (audioBuffer.length * TARGET_SAMPLE_RATE) / audioBuffer.sampleRate,
-  );
-
-  const offlineCtx = new OfflineAudioContext(
-    1,
-    targetLength,
-    TARGET_SAMPLE_RATE,
-  );
-  const source = offlineCtx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(offlineCtx.destination);
-  source.start(0);
-
-  const rendered = await offlineCtx.startRendering();
-  return rendered.getChannelData(0);
-}
-
-/**
- * Decode a WAV/audio file blob directly via Web Audio API.
- * @param {ArrayBuffer} arrayBuffer
- * @returns {Promise<AudioBuffer>}
- */
-export async function decodeAudioData(arrayBuffer) {
-  const audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
-  try {
-    return await audioCtx.decodeAudioData(arrayBuffer);
-  } finally {
-    await audioCtx.close();
-  }
-}
-
-/**
- * Check if a file can be decoded directly by the Web Audio API
- * without needing FFmpeg transcoding.
- * @param {File} file
- * @returns {boolean}
- */
-export function canDecodeNatively(file) {
-  const nativeTypes = [
-    "audio/wav",
-    "audio/x-wav",
-    "audio/mpeg",
-    "audio/mp4",
-    "audio/aac",
-    "audio/ogg",
-    "audio/webm",
-    "audio/flac",
-  ];
-  if (nativeTypes.includes(file.type)) return true;
-
-  // Fallback: check extension
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  return ["wav", "mp3", "m4a", "aac", "ogg", "webm", "flac"].includes(ext);
-}
-
-/**
- * Check if a file is a video format that requires audio extraction.
- * @param {File} file
- * @returns {boolean}
- */
-export function isVideoFile(file) {
-  if (file.type.startsWith("video/")) return true;
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  return ["mp4", "mov", "mkv", "avi", "webm"].includes(ext);
-}
 
 /**
  * Encode mono Float32 PCM as a 16-bit PCM WAV blob.

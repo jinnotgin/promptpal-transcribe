@@ -22,7 +22,7 @@ provide("toast", toast);
         />
         <span class="flex min-w-0 items-baseline gap-1.5 truncate text-lg">
           <span class="font-medium text-foreground">{{ APP_NAME }}</span>
-          <span class="font-normal text-[hsl(283_42%_43%)]">Transcribe</span>
+          <span class="font-normal text-[hsl(214_72%_46%)]">Transcribe</span>
         </span>
         <span
           class="ml-0.5 shrink-0 rounded border border-foreground/25 px-1 py-0.5 text-[10px] font-medium uppercase leading-none text-muted-foreground"

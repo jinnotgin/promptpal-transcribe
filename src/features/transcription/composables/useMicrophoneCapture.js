@@ -4,7 +4,7 @@
  *
  * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  * @param {(pcm: Float32Array) => void} onPcmChunk - called with each ~128ms PCM chunk
- * @param {{ onEnded?: () => void }} [options]
+ * @param {{ onEnded?: () => void, onStreamReady?: (stream: MediaStream) => void }} [options]
  */
 export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
   /** @type {AudioContext | null} */
@@ -19,6 +19,9 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
   let analyser = null;
   /** @type {number | null} */
   let levelRafId = null;
+  let flushSequence = 0;
+  /** @type {Map<number, { resolve: () => void, reject: (reason?: unknown) => void }>} */
+  const pendingFlushes = new Map();
 
   let activeDeviceId = null;
 
@@ -55,6 +58,12 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
     workletNode.port.onmessage = (e) => {
       if (e.data.type === "pcm") {
         onPcmChunk(new Float32Array(e.data.pcm));
+      } else if (e.data.type === "flushed") {
+        const pending = pendingFlushes.get(e.data.requestId);
+        if (pending) {
+          pendingFlushes.delete(e.data.requestId);
+          pending.resolve();
+        }
       }
     };
 
@@ -62,6 +71,7 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
 
     store.isListening = true;
     store.isPaused = false;
+    options.onStreamReady?.(stream);
     startLevelMetering();
   }
 
@@ -79,17 +89,18 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
       throw new Error(denied ? "MIC_PERMISSION_DENIED" : "MIC_UNAVAILABLE");
     }
 
-    stopAudioGraph({ updateStore: false });
+    await flushAndStop({ updateStore: false });
     activeDeviceId = nextDeviceId;
     await setupStream(nextStream);
-    if (wasPaused) pause();
+    if (wasPaused) await pause();
   }
 
-  function pause() {
+  async function pause() {
     if (!stream) return;
     for (const track of stream.getAudioTracks()) {
       track.enabled = false;
     }
+    await flushWorklet("flush");
     store.isPaused = true;
     store.micLevel = 0;
   }
@@ -106,14 +117,46 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
     stopAudioGraph({ updateStore: true });
   }
 
-  function stopAudioGraph({ updateStore }) {
+  async function flushAndStop(options = {}) {
+    const updateStore = options.updateStore ?? true;
+    await flushWorklet("flush-and-stop");
+    stopAudioGraph({ updateStore, notifyWorklet: false });
+  }
+
+  async function flushWorklet(type) {
+    const node = workletNode;
+    if (!node) return;
+    const requestId = ++flushSequence;
+    await new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        pendingFlushes.delete(requestId);
+        reject(new Error("Microphone PCM flush timed out"));
+      }, 2000);
+      pendingFlushes.set(requestId, {
+        resolve: () => {
+          clearTimeout(timeoutId);
+          resolve();
+        },
+        reject,
+      });
+      node.port.postMessage({ type, requestId });
+    });
+  }
+
+  function stopAudioGraph({ updateStore, notifyWorklet = true }) {
     stopLevelMetering();
 
     if (workletNode) {
-      workletNode.port.postMessage({ type: "stop" });
+      if (notifyWorklet) workletNode.port.postMessage({ type: "stop" });
       workletNode.disconnect();
       workletNode = null;
     }
+    for (const pending of pendingFlushes.values()) {
+      pending.reject(
+        new DOMException("Microphone capture stopped", "AbortError"),
+      );
+    }
+    pendingFlushes.clear();
     if (sourceNode) {
       sourceNode.disconnect();
       sourceNode = null;
@@ -138,8 +181,8 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
     }
   }
 
-  function interrupt() {
-    stopAudioGraph({ updateStore: false });
+  async function interrupt() {
+    await flushAndStop({ updateStore: false });
     store.micLevel = 0;
   }
 
@@ -168,7 +211,20 @@ export function useMicrophoneCapture(store, onPcmChunk, options = {}) {
     }
   }
 
-  return { start, pause, resume, stop, switchDevice, interrupt };
+  function getStream() {
+    return stream;
+  }
+
+  return {
+    start,
+    pause,
+    resume,
+    stop,
+    flushAndStop,
+    switchDevice,
+    interrupt,
+    getStream,
+  };
 }
 
 function createAudioConstraints(deviceId) {

@@ -123,11 +123,6 @@ async function processChunk(chunkAudio, chunkStart, chunkIndex) {
     diagnostics: {
       wordCount: words.length,
       textLength: rawText.length,
-      utteranceTextPreview: rawText.slice(0, 180),
-      wordPreview: words
-        .slice(0, 24)
-        .map((word) => word.text)
-        .join(" "),
       utteranceIds: Array.from(
         new Set(words.map((word) => word.utteranceId)),
       ).filter((id) => id != null),

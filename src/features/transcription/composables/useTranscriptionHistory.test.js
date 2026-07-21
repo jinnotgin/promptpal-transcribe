@@ -23,9 +23,6 @@ const makeEntry = (overrides = {}) => ({
   fileSize: 2048,
   fileDuration: 12,
   isLiveRecording: false,
-  audioBlob: new Blob(["audio-bytes"], { type: "audio/mpeg" }),
-  audioMimeType: "audio/mpeg",
-  audioFileName: "memo.mp3",
   segments: makeSegments(),
   speakerNames: { "Speaker 1": "Alice", "Speaker 2": "Bob" },
   speakerColors: { "Speaker 1": "#111111" },
@@ -65,7 +62,7 @@ describe("useTranscriptionHistory", () => {
     expect("segments" in summaries[0]).toBe(false);
   });
 
-  it("loads the full record with audio and speakers when opened", async () => {
+  it("loads the full text record and speakers when opened", async () => {
     const history = useTranscriptionHistory();
     const id = await history.saveTranscript(makeEntry());
 
@@ -76,8 +73,83 @@ describe("useTranscriptionHistory", () => {
       "Speaker 1": "Alice",
       "Speaker 2": "Bob",
     });
-    expect(full.audioBlob).toBeInstanceOf(Blob);
-    expect(full.audioBlob.size).toBeGreaterThan(0);
+    expect("audioBlob" in full).toBe(false);
+  });
+
+  it("persists manifest metadata without duplicating new audio in the payload", async () => {
+    const history = useTranscriptionHistory();
+    const id = "manifest-record";
+    const audioManifest =
+      /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} */ ({
+        version: 1,
+        duration: 12,
+        source: "upload",
+        parts: [
+          {
+            index: 0,
+            start: 0,
+            end: 12,
+            mimeType: "audio/mpeg",
+            sizeBytes: 5,
+            fragmentCount: 1,
+          },
+        ],
+      });
+    await db.transcriptAudioFragments.put({
+      transcriptId: id,
+      partIndex: 0,
+      fragmentIndex: 0,
+      blob: new Blob(["audio"], { type: "audio/mpeg" }),
+    });
+
+    await history.saveTranscript(makeEntry({ id, audioManifest }), {
+      finalizeAudio: true,
+    });
+    const full = await history.loadTranscript(id);
+    expect("audioBlob" in full).toBe(false);
+    expect(full.audioManifest).toEqual(audioManifest);
+
+    await history.deleteTranscript(id);
+    expect(
+      await db.transcriptAudioFragments
+        .where("transcriptId")
+        .equals(id)
+        .count(),
+    ).toBe(0);
+  });
+
+  it("refuses to finalize a manifest whose fragment count or byte total is incomplete", async () => {
+    const history = useTranscriptionHistory();
+    const id = "incomplete-manifest";
+    const audioManifest = {
+      version: 1,
+      duration: 2,
+      source: "live",
+      parts: [
+        {
+          index: 0,
+          start: 0,
+          end: 2,
+          mimeType: "audio/webm",
+          sizeBytes: 20,
+          fragmentCount: 2,
+        },
+      ],
+    };
+    await db.transcriptAudioFragments.put({
+      transcriptId: id,
+      partIndex: 0,
+      fragmentIndex: 0,
+      blob: new Blob(["short"]),
+    });
+
+    await expect(
+      history.saveTranscript(makeEntry({ id, audioManifest }), {
+        finalizeAudio: true,
+      }),
+    ).rejects.toThrow(/incomplete|byte size/i);
+    expect(await db.transcripts.get(id)).toBeUndefined();
+    expect(await db.transcriptPayloads.get(id)).toBeUndefined();
   });
 
   it("returns null when loading a missing record", async () => {
@@ -185,7 +257,7 @@ describe("useTranscriptionHistory", () => {
     });
     legacyDb.close();
 
-    // Opening the shared (v1+v2) instance triggers the upgrade.
+    // Opening the shared instance triggers the upgrade chain through v4.
     await db.open();
 
     const history = useTranscriptionHistory();
@@ -199,9 +271,55 @@ describe("useTranscriptionHistory", () => {
     expect(full.segments).toHaveLength(2);
     expect(full.segments[0].text).toBe("legacy words");
     expect(full.speakerNames["Speaker 1"]).toBe("Legacy");
-    expect(full.audioBlob.size).toBeGreaterThan(0);
+    expect("audioBlob" in full).toBe(false);
 
     // The legacy primary-key row must be gone.
     expect(await db.transcripts.get("latest")).toBeUndefined();
+  });
+
+  it("upgrades v2 Blob audio to text-only history without deleting transcript content", async () => {
+    if (db.isOpen()) db.close();
+    await Dexie.delete(TRANSCRIPTION_DB_NAME);
+
+    const legacyDb = new Dexie(TRANSCRIPTION_DB_NAME);
+    legacyDb.version(2).stores({
+      transcripts: "&id, createdAt",
+      transcriptPayloads: "&id",
+      modelCache: "&cacheKey",
+    });
+    await legacyDb.open();
+    await legacyDb.table("transcripts").put({
+      id: "legacy-v2",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      fileName: "legacy-v2.mp3",
+      fileSize: 999,
+      fileDuration: 42,
+      isLiveRecording: true,
+      hasReprocessedLiveRecording: false,
+      speakerCount: 2,
+      segmentCount: 2,
+      preview: "legacy words",
+    });
+    await legacyDb.table("transcriptPayloads").put({
+      id: "legacy-v2",
+      audioBlob: new Blob(["legacy-audio"], { type: "audio/mpeg" }),
+      audioMimeType: "audio/mpeg",
+      audioFileName: "legacy-v2.mp3",
+      segments: makeSegments("legacy words"),
+      speakerNames: { "Speaker 1": "Legacy" },
+      speakerColors: {},
+      addedSpeakerIds: [],
+      waveformSamples: [],
+    });
+    legacyDb.close();
+
+    await db.open();
+
+    const full = await useTranscriptionHistory().loadTranscript("legacy-v2");
+    expect(full.segments[0].text).toBe("legacy words");
+    expect(full.speakerNames["Speaker 1"]).toBe("Legacy");
+    expect("audioBlob" in full).toBe(false);
+    expect(db.verno).toBe(4);
   });
 });

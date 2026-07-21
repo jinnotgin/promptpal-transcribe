@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useModelManager } from "./useModelManager.js";
-import { getOrDownloadModelAsset } from "@/features/transcription/lib/modelCache.js";
+import {
+  getOrDownloadModelAsset,
+  listCachedModelKeys,
+} from "@/features/transcription/lib/modelCache.js";
 
 const downloadState = vi.hoisted(() => ({
   started: /** @type {string[]} */ ([]),
@@ -16,6 +19,8 @@ const downloadState = vi.hoisted(() => ({
 vi.mock("@/features/transcription/lib/modelCache.js", () => ({
   clearCachedModels: vi.fn().mockResolvedValue(undefined),
   getCachedModel: vi.fn().mockResolvedValue(null),
+  hasCachedModel: vi.fn().mockResolvedValue(false),
+  listCachedModelKeys: vi.fn().mockResolvedValue([]),
   getOrDownloadModelAsset: vi.fn((assetKey, _signal, onProgress) => {
     downloadState.started.push(assetKey);
     if (onProgress) downloadState.progressCallbacks.set(assetKey, onProgress);
@@ -67,34 +72,57 @@ describe("useModelManager", () => {
     vi.clearAllMocks();
   });
 
-  it("starts all required model prefetch downloads in parallel", async () => {
+  it("prefetches required models sequentially without returning their buffers", async () => {
     const store = makeStore();
     const manager = useModelManager(store);
 
     const prefetch = manager.ensureModelsReady("webgpu", true);
     await Promise.resolve();
 
-    expect(downloadState.started).toEqual([
-      "encoderFp16",
-      "decoder",
-      "vocab",
-      "diarization",
-    ]);
-    expect(getOrDownloadModelAsset).toHaveBeenCalledTimes(4);
-
+    expect(downloadState.started).toEqual(["encoderFp16"]);
     downloadState.resolvers.get("encoderFp16")?.(new ArrayBuffer(1));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual(["encoderFp16", "decoder"]),
+    );
     downloadState.resolvers.get("decoder")?.(new ArrayBuffer(2));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual([
+        "encoderFp16",
+        "decoder",
+        "vocab",
+      ]),
+    );
     downloadState.resolvers.get("vocab")?.(new ArrayBuffer(3));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual([
+        "encoderFp16",
+        "decoder",
+        "vocab",
+        "diarization",
+      ]),
+    );
     downloadState.resolvers.get("diarization")?.(new ArrayBuffer(4));
 
-    await expect(prefetch).resolves.toEqual({
-      encoderFp16: expect.any(ArrayBuffer),
-      decoder: expect.any(ArrayBuffer),
-      vocab: expect.any(ArrayBuffer),
-      diarization: expect.any(ArrayBuffer),
-    });
+    await expect(prefetch).resolves.toBeUndefined();
+    expect(getOrDownloadModelAsset).toHaveBeenCalledTimes(4);
     expect(store.parakeetCached).toBe(false);
     expect(store.sortformerCached).toBe(false);
+  });
+
+  it("checks cache readiness from keys without reading model payloads", async () => {
+    vi.mocked(listCachedModelKeys).mockResolvedValue([
+      "parakeet-encoder-fp16",
+      "parakeet-decoder",
+      "parakeet-vocab",
+      "sortformer-diarization",
+    ]);
+    const store = makeStore();
+
+    await useModelManager(store).checkCache();
+
+    expect(store.parakeetCached).toBe(true);
+    expect(store.sortformerCached).toBe(true);
+    expect(listCachedModelKeys).toHaveBeenCalledOnce();
   });
 
   it("reports aggregate ASR progress while keeping diarization progress separate", async () => {
@@ -111,6 +139,8 @@ describe("useModelManager", () => {
       totalBytes: 1,
       source: "download",
     });
+    downloadState.resolvers.get("encoderFp16")?.(new ArrayBuffer(1));
+    await vi.waitFor(() => expect(downloadState.started).toContain("decoder"));
     downloadState.progressCallbacks.get("decoder")?.({
       assetKey: "decoder",
       percent: 50,
@@ -118,6 +148,8 @@ describe("useModelManager", () => {
       totalBytes: 2,
       source: "download",
     });
+    downloadState.resolvers.get("decoder")?.(new ArrayBuffer(1));
+    await vi.waitFor(() => expect(downloadState.started).toContain("vocab"));
     downloadState.progressCallbacks.get("vocab")?.({
       assetKey: "vocab",
       percent: 0,
@@ -125,6 +157,10 @@ describe("useModelManager", () => {
       totalBytes: 1,
       source: "download",
     });
+    downloadState.resolvers.get("vocab")?.(new ArrayBuffer(1));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toContain("diarization"),
+    );
     downloadState.progressCallbacks.get("diarization")?.({
       assetKey: "diarization",
       percent: 25,
@@ -136,9 +172,7 @@ describe("useModelManager", () => {
     expect(store.parakeetLoadProgress).toBe(50);
     expect(store.sortformerLoadProgress).toBe(25);
 
-    for (const key of downloadState.started) {
-      downloadState.resolvers.get(key)?.(new ArrayBuffer(1));
-    }
+    downloadState.resolvers.get("diarization")?.(new ArrayBuffer(1));
     await prefetch;
   });
 });

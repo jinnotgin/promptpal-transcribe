@@ -11,6 +11,8 @@ export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  * @typedef {{ text: string, start: number, end: number, confidence?: number, utteranceId?: number }} TranscriptWord
  * @typedef {{ id: string, start: number, end: number, text: string, speaker: string | null, words?: TranscriptWord[] }} TranscriptSegment
  * @typedef {{ cacheKey: string, data: ArrayBuffer, downloadedAt: string, sizeBytes: number }} ModelCacheEntry
+ * @typedef {import('./transcriptAudioManifest.js').TranscriptAudioManifest} TranscriptAudioManifest
+ * @typedef {{ transcriptId: string, partIndex: number, fragmentIndex: number, blob: Blob }} TranscriptAudioFragmentRow
  *
  * @typedef {{
  *   id: string,
@@ -28,13 +30,14 @@ export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  *
  * @typedef {{
  *   id: string,
- *   audioBlob: Blob,
- *   audioMimeType: string,
- *   audioFileName: string,
+ *   audioMimeType?: string,
+ *   audioFileName?: string,
+ *   audioManifest?: TranscriptAudioManifest | null,
  *   segments: TranscriptSegment[],
  *   speakerNames: Record<string, string>,
  *   speakerColors: Record<string, string>,
  *   addedSpeakerIds: string[],
+ *   waveformSamples: number[],
  * }} TranscriptPayload
  *
  * @typedef {TranscriptSummary & TranscriptPayload} TranscriptHistoryEntry
@@ -44,6 +47,7 @@ export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  * @typedef {Dexie & {
  *   transcripts: import('dexie').Table<TranscriptSummary, string>
  *   transcriptPayloads: import('dexie').Table<TranscriptPayload, string>
+ *   transcriptAudioFragments: import('dexie').Table<TranscriptAudioFragmentRow, [string, number, number]>
  *   modelCache: import('dexie').Table<ModelCacheEntry, string>
  * }} TranscriptionDb
  */
@@ -78,7 +82,6 @@ export const createTranscriptionDb = () => {
       await tx.table("transcriptPayloads").put(
         buildPayload({
           id,
-          audioBlob: legacy.audioBlob,
           audioMimeType: legacy.audioMimeType,
           audioFileName: legacy.audioFileName ?? legacy.fileName,
           fileName: legacy.fileName,
@@ -104,6 +107,34 @@ export const createTranscriptionDb = () => {
           addedSpeakerIds: legacy.addedSpeakerIds,
         }),
       );
+    });
+
+  // v3: media bytes are stored as bounded fragment rows and payloads keep a manifest.
+  db.version(3).stores({
+    transcripts: "&id, createdAt",
+    transcriptPayloads: "&id",
+    transcriptAudioFragments:
+      "[transcriptId+partIndex+fragmentIndex], transcriptId, [transcriptId+partIndex]",
+    modelCache: "&cacheKey",
+  });
+
+  // v4: legacy single-Blob audio is no longer supported. Preserve transcript
+  // content and metadata while releasing the obsolete audio bytes.
+  db.version(4)
+    .stores({
+      transcripts: "&id, createdAt",
+      transcriptPayloads: "&id",
+      transcriptAudioFragments:
+        "[transcriptId+partIndex+fragmentIndex], transcriptId, [transcriptId+partIndex]",
+      modelCache: "&cacheKey",
+    })
+    .upgrade(async (tx) => {
+      await tx
+        .table("transcriptPayloads")
+        .toCollection()
+        .modify((payload) => {
+          delete payload.audioBlob;
+        });
     });
 
   return db;

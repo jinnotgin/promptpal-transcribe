@@ -56,6 +56,9 @@ import { useModelManager } from "@/features/transcription/composables/useModelMa
 import { useTranscriptionPipeline } from "@/features/transcription/composables/useTranscriptionPipeline";
 import { useTranscriptionExport } from "@/features/transcription/composables/useTranscriptionExport";
 import { useTranscriptionHistory } from "@/features/transcription/composables/useTranscriptionHistory";
+import { useTranscriptionAudioAssets } from "@/features/transcription/composables/useTranscriptionAudioAssets.js";
+import { useLiveRecordingMp3Export } from "@/features/transcription/composables/useLiveRecordingMp3Export.js";
+import { generateRecordId } from "@/features/transcription/lib/transcriptHistoryRecords.js";
 import { isChromeBrowser } from "@/features/transcription/lib/hardwareCapabilities.js";
 import { APP_NAME } from "@/lib/config.js";
 import { copyContent, formatDate } from "@/lib/utils.js";
@@ -64,7 +67,8 @@ import {
   formatPlainText,
   transcriptBaseName,
 } from "@/features/transcription/lib/transcriptFormatters.js";
-import { createWavBlobFromPcm } from "@/features/transcription/lib/audioUtils.js";
+import { findAudioPartAtTime } from "@/features/transcription/lib/transcriptAudioManifest.js";
+import { createTranscriptAudioSeekCoordinator } from "@/features/transcription/lib/transcriptAudioSeek.js";
 import TranscriptionDropZone from "@/features/transcription/components/TranscriptionDropZone.vue";
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
@@ -92,6 +96,8 @@ const livePipeline = useLivePipeline(store);
 const microphoneDevices = useMicrophoneDevices(store);
 const transcriptionExport = useTranscriptionExport(store);
 const transcriptionHistory = useTranscriptionHistory();
+const transcriptionAudioAssets = useTranscriptionAudioAssets();
+const liveRecordingMp3Export = useLiveRecordingMp3Export();
 
 const activeTranscriptId = ref(/** @type {string | null} */ (null));
 const historySummaries = ref(
@@ -105,27 +111,41 @@ const segmentRowRefs = new Map();
 const isAudioPlaying = ref(false);
 const playbackProgress = ref(0);
 const currentPlaybackTime = ref(0);
-const waveformSamples = ref([]);
 const isSeekingWaveform = ref(false);
 const hoverPlaybackRatio = ref(null);
-const waveformAbortController = ref(null);
 const isSpeakerPanelOpen = ref(true);
 const isTranscriptCopied = ref(false);
 const isStoppingLive = ref(false);
 const isLiveRecordingExporting = ref(false);
+const liveRecordingExportProgress = liveRecordingMp3Export.progress;
 const liveRecordingExportError = ref(false);
 const isLiveRecordingResult = ref(false);
 const hasReprocessedLiveRecording = ref(false);
 const liveScrollAreaRef = ref(null);
-const historyAudioBlob = ref(/** @type {Blob | null} */ (null));
-const isHydratingHistory = ref(false);
-const prefetchPromise = ref(
-  /** @type {Promise<Record<string, ArrayBuffer>> | null} */ (null),
+const activeAudioManifest = ref(
+  /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null} */ (
+    null
+  ),
 );
+const activeAudioPartIndex = ref(0);
+const pendingLiveTranscriptId = ref(/** @type {string | null} */ (null));
+let prefetchedAudioPart = null;
+const isHydratingHistory = ref(false);
+const prefetchPromise = ref(/** @type {Promise<void> | null} */ (null));
 const isAwaitingPrefetch = ref(false);
 let transcriptionStartToken = 0;
 let liveStartToken = 0;
 let transcriptCopiedTimeoutId = null;
+const audioSeekCoordinator = createTranscriptAudioSeekCoordinator({
+  getAudio: () => audioRef.value,
+  getManifest: () => activeAudioManifest.value,
+  getActivePartIndex: () => activeAudioPartIndex.value,
+  loadPart: (partIndex, relativeTime, isCurrent) =>
+    loadAudioPart(partIndex, relativeTime, { isCurrent }),
+  onPlayingChange: (playing) => {
+    isAudioPlaying.value = playing;
+  },
+});
 let persistHistoryTimeoutId = null;
 const MAX_LOCAL_FILE_SIZE_BYTES = 1024 * 1024 * 1024;
 const MAX_LOCAL_DURATION_SECONDS = 3 * 60 * 60;
@@ -153,17 +173,17 @@ const preflightWarning = computed(() => {
   if (!store.file) return null;
 
   if (store.fileSize > MAX_LOCAL_FILE_SIZE_BYTES) {
-    return "This file is over 1 GB and may exceed browser memory limits. Use a smaller file or split it before transcribing.";
+    return "This is a very large file. It will be processed in bounded windows, but transcription and browser-local history storage may take longer.";
   }
 
   if (store.fileDuration && store.fileDuration > MAX_LOCAL_DURATION_SECONDS) {
-    return "This file is over 3 hours long and may exceed browser memory limits. Split it into shorter files before transcribing.";
+    return "This is a long recording. It will be processed in bounded windows, so you can keep this tab open while transcription continues.";
   }
 
   return null;
 });
 
-const blocksTranscription = computed(() => Boolean(preflightWarning.value));
+const blocksTranscription = false;
 const shouldShowBrowserAdvisory = computed(() => !isChromeBrowser());
 const hasMemoryAdvisory = computed(() => store.runtimeAdvisory === "memory");
 const advisoryVariant = computed(() => {
@@ -285,7 +305,14 @@ const currentPlaybackLabel = computed(
 );
 const totalPlaybackLabel = computed(() => {
   const audio = audioRef.value;
-  return formatDuration(audio?.duration || store.fileDuration || 0) || "0:00";
+  return (
+    formatDuration(
+      activeAudioManifest.value?.duration ||
+        audio?.duration ||
+        store.fileDuration ||
+        0,
+    ) || "0:00"
+  );
 });
 // Reserve exactly "<total> / <total>" so the label never wraps or jitters as the
 // current time gains digits — font-mono makes every character 1ch wide.
@@ -313,8 +340,8 @@ const speakerColorMap = computed(() => {
 });
 const canRemoveSpeaker = computed(() => speakerIds.value.length > 1);
 const waveformBars = computed(() => {
-  const samples = waveformSamples.value.length
-    ? waveformSamples.value
+  const samples = store.waveformSamples.length
+    ? store.waveformSamples
     : fallbackWaveformSamples(DEFAULT_WAVEFORM_BAR_COUNT);
   return samples.map((sample) => ({
     height: 8 + Math.round(sample * 38),
@@ -337,6 +364,11 @@ const hoverSeekerStyle = computed(() => ({
 }));
 
 onMounted(async () => {
+  try {
+    await transcriptionAudioAssets.reconcileOrphans();
+  } catch (error) {
+    console.warn("[transcription] Could not reconcile staged audio:", error);
+  }
   document.title = `${APP_NAME} Transcribe`;
   trackAnalyticsEvent("page_navigation", {
     page_location: "transcribe_page",
@@ -381,14 +413,6 @@ watch(
   [() => route.name, () => route.params.transcriptId],
   () => {
     void syncTranscriptionRoute();
-  },
-  { immediate: true },
-);
-
-watch(
-  () => store.audioUrl,
-  (audioUrl) => {
-    loadWaveform(audioUrl);
   },
   { immediate: true },
 );
@@ -438,8 +462,6 @@ function handleFileSelected(file) {
   store.setFile(file);
   isLiveRecordingResult.value = false;
   hasReprocessedLiveRecording.value = false;
-  historyAudioBlob.value = file;
-
   // Estimate duration via Web Audio API
   const url = URL.createObjectURL(file);
   store.audioUrl = url;
@@ -473,13 +495,16 @@ async function handleStartOver() {
 }
 
 function resetWorkingTranscriptState() {
+  audioSeekCoordinator.cancelPendingSeek();
   activeTranscriptId.value = null;
-  historyAudioBlob.value = null;
+  activeAudioManifest.value = null;
+  activeAudioPartIndex.value = 0;
+  pendingLiveTranscriptId.value = null;
+  disposePrefetchedAudioPart();
   if (persistHistoryTimeoutId !== null) {
     window.clearTimeout(persistHistoryTimeoutId);
     persistHistoryTimeoutId = null;
   }
-  livePipeline.discardCapturedPcm();
   store.clearFile();
   store.setLiveMode(false);
   isLiveRecordingResult.value = false;
@@ -504,7 +529,8 @@ async function handleStartTranscription() {
     }
   }
   if (startToken !== transcriptionStartToken) return;
-  await pipeline.start();
+  const pendingTranscriptId = generateRecordId();
+  await pipeline.start({ transcriptId: pendingTranscriptId });
   if (store.processPhase === "complete" && !store.segments.length) {
     store.processPhase = "error";
     store.error = {
@@ -515,46 +541,78 @@ async function handleStartTranscription() {
     };
   }
   if (store.processPhase === "complete" && store.segments.length) {
-    historyAudioBlob.value = store.file;
+    activeTranscriptId.value = pendingTranscriptId;
+    activeAudioManifest.value = pipeline.audioManifest.value;
     await persistTranscriptRecord({
-      audioBlob: store.file,
-      audioFileName: store.fileName,
-      audioMimeType: store.file?.type ?? null,
+      audioManifest: activeAudioManifest.value,
+      audioFileName: `${transcriptBaseName(store.fileName)}.webm`,
+      audioMimeType: activeAudioManifest.value?.parts[0]?.mimeType ?? null,
       isLiveRecording: false,
+      finalizeAudio: Boolean(activeAudioManifest.value),
+      finishAudioStaging: () =>
+        pipeline.finishAudioStaging(pendingTranscriptId),
+      rollbackAudioStaging: () =>
+        pipeline.rollbackAudioStaging(pendingTranscriptId),
     });
+    await loadAudioPart(0);
+    if (pipeline.audioPersistenceError.value) {
+      toast?.({
+        title: "Transcript saved without audio",
+        description:
+          "The audio review copy could not be stored. The completed transcript is still available in history.",
+      });
+    }
   }
 }
 
 /**
  * Create or update the active history record from the current store state.
  * @param {{
- *   audioBlob?: Blob | null,
  *   audioFileName?: string | null,
  *   audioMimeType?: string | null,
+ *   audioManifest?: import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null,
  *   isLiveRecording?: boolean,
  *   hasReprocessedLiveRecording?: boolean,
+ *   finalizeAudio?: boolean,
+ *   finishAudioStaging?: () => Promise<void>,
+ *   rollbackAudioStaging?: () => Promise<void>,
  * }} [options]
  * @returns {Promise<string | null>}
  */
 async function persistTranscriptRecord(options = {}) {
   if (!store.segments.length) return null;
-  const recordId = await transcriptionHistory.saveTranscript({
-    id: activeTranscriptId.value ?? undefined,
-    fileName: store.fileName,
-    fileSize: store.fileSize,
-    fileDuration: store.fileDuration ?? store.liveElapsed,
-    isLiveRecording: options.isLiveRecording ?? isLiveRecordingResult.value,
-    hasReprocessedLiveRecording:
-      options.hasReprocessedLiveRecording ?? hasReprocessedLiveRecording.value,
-    audioBlob: options.audioBlob ?? historyAudioBlob.value,
-    audioFileName: options.audioFileName ?? store.fileName,
-    audioMimeType:
-      options.audioMimeType ?? historyAudioBlob.value?.type ?? null,
-    segments: store.segments,
-    speakerNames: store.speakerNames,
-    speakerColors: store.speakerColors,
-    addedSpeakerIds: store.addedSpeakerIds,
-  });
+  let recordId;
+  try {
+    recordId = await transcriptionHistory.saveTranscript(
+      {
+        id: activeTranscriptId.value ?? undefined,
+        fileName: store.fileName,
+        fileSize: store.fileSize,
+        fileDuration: store.fileDuration ?? store.liveElapsed,
+        isLiveRecording: options.isLiveRecording ?? isLiveRecordingResult.value,
+        hasReprocessedLiveRecording:
+          options.hasReprocessedLiveRecording ??
+          hasReprocessedLiveRecording.value,
+        audioManifest: options.audioManifest ?? activeAudioManifest.value,
+        audioFileName: options.audioFileName ?? store.fileName,
+        audioMimeType:
+          options.audioMimeType ??
+          (options.audioManifest ?? activeAudioManifest.value)?.parts[0]
+            ?.mimeType ??
+          null,
+        segments: store.segments,
+        speakerNames: store.speakerNames,
+        speakerColors: store.speakerColors,
+        addedSpeakerIds: store.addedSpeakerIds,
+        waveformSamples: store.waveformSamples,
+      },
+      { finalizeAudio: options.finalizeAudio },
+    );
+  } catch (error) {
+    if (options.finalizeAudio) await options.rollbackAudioStaging?.();
+    throw error;
+  }
+  if (options.finalizeAudio) await options.finishAudioStaging?.();
   activeTranscriptId.value = recordId;
   const routeState = transcriptionRouteState.value;
   if (routeState.surface !== "detail" || routeState.transcriptId !== recordId) {
@@ -579,17 +637,36 @@ async function refreshHistorySummaries() {
  * Hydrate the store + working view from a loaded history record.
  * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptHistoryEntry} record
  */
-function hydrateFromRecord(record) {
+async function hydrateFromRecord(record) {
   isHydratingHistory.value = true;
   try {
     store.clearFile();
-    const hydratedFile = new File(
-      [record.audioBlob],
-      record.audioFileName || record.fileName || "transcript-audio",
-      { type: record.audioMimeType || record.audioBlob.type || "audio/mpeg" },
-    );
-    historyAudioBlob.value = record.audioBlob;
-    store.file = hydratedFile;
+    activeTranscriptId.value = record.id;
+    activeAudioManifest.value = record.audioManifest ?? null;
+    activeAudioPartIndex.value = 0;
+    let playbackBlob = null;
+    if (record.audioManifest) {
+      try {
+        playbackBlob = await transcriptionAudioAssets.getPartBlob(
+          record.id,
+          record.audioManifest.parts[0],
+        );
+      } catch (error) {
+        console.warn("[transcription] Saved audio is incomplete:", error);
+        playbackBlob = null;
+      }
+    }
+    const hasPlaybackAudio =
+      playbackBlob instanceof Blob && playbackBlob.size > 0;
+    store.file = hasPlaybackAudio
+      ? new File(
+          [playbackBlob],
+          record.audioFileName || record.fileName || "transcript-audio",
+          {
+            type: record.audioMimeType || playbackBlob.type || "audio/mpeg",
+          },
+        )
+      : null;
     store.fileName = record.fileName;
     store.fileSize = record.fileSize;
     store.fileDuration = record.fileDuration;
@@ -597,8 +674,12 @@ function hydrateFromRecord(record) {
     store.speakerNames = record.speakerNames;
     store.speakerColors = record.speakerColors;
     store.addedSpeakerIds = record.addedSpeakerIds ?? [];
+    store.waveformSamples = record.waveformSamples ?? [];
     store.processPhase = "complete";
-    store.audioUrl = URL.createObjectURL(record.audioBlob);
+    store.audioUrl = hasPlaybackAudio
+      ? URL.createObjectURL(playbackBlob)
+      : null;
+    if (record.audioManifest?.parts?.[1]) void prefetchAudioPart(1);
     isLiveRecordingResult.value =
       Boolean(record.isLiveRecording) ||
       record.audioFileName === "live-recording" ||
@@ -703,7 +784,7 @@ async function syncTranscriptionRoute() {
     return;
   }
 
-  hydrateFromRecord(record);
+  await hydrateFromRecord(record);
   activeTranscriptId.value = record.id;
   searchQuery.value = "";
   playbackProgress.value = 0;
@@ -724,7 +805,7 @@ function scheduleHistoryPersist() {
     // created explicitly by the completion handlers.
     if (!activeTranscriptId.value) return;
     await persistTranscriptRecord({
-      audioBlob: historyAudioBlob.value,
+      audioManifest: activeAudioManifest.value,
       audioFileName: store.fileName,
     });
   }, 250);
@@ -765,7 +846,8 @@ async function handleStartLive() {
     }
   }
   if (startToken !== liveStartToken) return;
-  await livePipeline.start();
+  pendingLiveTranscriptId.value = generateRecordId();
+  await livePipeline.start({ transcriptId: pendingLiveTranscriptId.value });
   await microphoneDevices.refreshMicrophones();
 }
 
@@ -803,23 +885,37 @@ async function handleRetryMicrophone() {
 
 async function handleStopLive() {
   isStoppingLive.value = true;
-  await livePipeline.stop();
-  if (store.processPhase === "complete" && store.segments.length) {
-    const liveAudioBlob = createLiveRecordingAudioBlob();
-    if (liveAudioBlob) {
-      historyAudioBlob.value = liveAudioBlob;
-      if (store.audioUrl) {
-        URL.revokeObjectURL(store.audioUrl);
+  try {
+    await livePipeline.stop();
+    if (store.processPhase === "complete" && store.segments.length) {
+      activeTranscriptId.value = pendingLiveTranscriptId.value;
+      activeAudioManifest.value = livePipeline.audioManifest.value;
+      if (activeAudioManifest.value) {
+        await loadAudioPart(0);
       }
-      store.audioUrl = URL.createObjectURL(liveAudioBlob);
+      await persistTranscriptRecord({
+        audioManifest: activeAudioManifest.value,
+        audioFileName: "live-recording",
+        audioMimeType: activeAudioManifest.value?.parts[0]?.mimeType ?? null,
+        isLiveRecording: true,
+        hasReprocessedLiveRecording: false,
+        finalizeAudio: Boolean(activeAudioManifest.value),
+        finishAudioStaging: () =>
+          livePipeline.finishAudioStaging(pendingLiveTranscriptId.value),
+        rollbackAudioStaging: () =>
+          livePipeline.rollbackAudioStaging(pendingLiveTranscriptId.value),
+      });
+      if (livePipeline.audioPersistenceError.value) {
+        toast?.({
+          title: "Transcript saved without audio",
+          description:
+            "Browser storage could not keep the recording audio. The transcript text is still available in history.",
+        });
+      }
     }
-    await persistTranscriptRecord({
-      audioBlob: liveAudioBlob,
-      audioFileName: "live-recording",
-      audioMimeType: liveAudioBlob?.type ?? null,
-      isLiveRecording: true,
-      hasReprocessedLiveRecording: false,
-    });
+  } finally {
+    pendingLiveTranscriptId.value = null;
+    isStoppingLive.value = false;
   }
 }
 
@@ -827,12 +923,11 @@ const canReprocess = computed(
   () =>
     isLiveRecordingResult.value &&
     showTranscriptResult.value &&
-    !hasReprocessedLiveRecording.value,
+    !hasReprocessedLiveRecording.value &&
+    (Boolean(activeAudioManifest.value) || Boolean(store.file)),
 );
 const hasDownloadableLiveRecordingAudio = computed(
-  () =>
-    livePipeline.capturedPcm.value != null ||
-    (historyAudioBlob.value != null && historyAudioBlob.value.size > 0),
+  () => activeAudioManifest.value?.parts?.length > 0,
 );
 const canDownloadLiveRecording = computed(
   () =>
@@ -843,38 +938,27 @@ const canDownloadLiveRecording = computed(
 const isReprocessing = ref(false);
 
 async function handleReprocess() {
-  const pcm = livePipeline.capturedPcm.value;
-
   isReprocessing.value = true;
   store.setEnableDiarization(true);
   try {
-    if (pcm) {
-      // Same session: PCM is in memory — skip transcode, feed directly
-      // Make a copy since diarization transfers the buffer
-      const pcmCopy = new Float32Array(pcm);
-      await pipeline.reprocessFromPcm(pcmCopy, { enableDiarization: true });
-    } else {
-      // After reload: PCM is gone but store.file is hydrated from the saved
-      // WAV blob (16kHz mono, lossless), so transcode overhead is negligible
-      await pipeline.start();
-    }
+    if (!activeAudioManifest.value || !activeTranscriptId.value) return;
+    await pipeline.reprocessFromManifest(
+      activeTranscriptId.value,
+      activeAudioManifest.value,
+      {
+        enableDiarization: true,
+      },
+    );
   } finally {
     isReprocessing.value = false;
   }
 
   if (store.processPhase === "complete" && store.segments.length) {
     hasReprocessedLiveRecording.value = true;
-    // After reload capturedPcm is gone, so fall back to the already-hydrated blob
-    const liveAudioBlob =
-      createLiveRecordingAudioBlob() ?? historyAudioBlob.value;
-    if (liveAudioBlob && !store.audioUrl) {
-      historyAudioBlob.value = liveAudioBlob;
-      store.audioUrl = URL.createObjectURL(liveAudioBlob);
-    }
     await persistTranscriptRecord({
-      audioBlob: liveAudioBlob,
+      audioManifest: activeAudioManifest.value,
       audioFileName: store.fileName,
-      audioMimeType: liveAudioBlob?.type ?? null,
+      audioMimeType: activeAudioManifest.value?.parts[0]?.mimeType ?? null,
       isLiveRecording: true,
       hasReprocessedLiveRecording: true,
     });
@@ -913,183 +997,28 @@ async function handleDownloadLiveRecording() {
   isLiveRecordingExporting.value = true;
   liveRecordingExportError.value = false;
   try {
-    const mp3Data = await createLiveRecordingMp3();
-    const blob = new Blob([mp3Data], { type: "audio/mpeg" });
-    saveAs(
-      blob,
-      `${transcriptBaseName(store.fileName || "live-recording")}.mp3`,
-    );
+    const baseName = transcriptBaseName(store.fileName || "live-recording");
+    const mp3Blob = await liveRecordingMp3Export.convert({
+      transcriptId: activeTranscriptId.value,
+      manifest: activeAudioManifest.value,
+    });
+    saveAs(mp3Blob, `${baseName}.mp3`);
     trackAnalyticsEvent("live_recording_downloaded", {
-      format: "mp3",
+      format: "audio/mpeg",
+      sourceFormat: activeAudioManifest.value?.parts[0]?.mimeType,
       durationSec: store.fileDuration || store.liveElapsed || null,
     });
   } catch (error) {
-    console.error("[live-transcription] MP3 export failed:", error);
+    console.error("[live-transcription] audio download failed:", error);
     liveRecordingExportError.value = true;
     toast?.({
       title: "Download failed",
-      description:
-        "Could not create an MP3 for this live recording. Please try again.",
+      description: "Could not save this live recording. Please try again.",
     });
   } finally {
+    await liveRecordingMp3Export.release().catch(() => {});
     isLiveRecordingExporting.value = false;
   }
-}
-
-/**
- * @returns {Promise<ArrayBuffer>}
- */
-async function createLiveRecordingMp3() {
-  const pcm = livePipeline.capturedPcm.value;
-  if (pcm) {
-    const wavBlob = createWavBlobFromPcm(pcm, { sampleRate: 16000 });
-    const wavData = await wavBlob.arrayBuffer();
-    return await exportLiveRecordingMp3(wavData, store.fileName);
-  }
-
-  if (!store.audioUrl) {
-    throw new Error("Live recording audio is unavailable");
-  }
-
-  const response = await fetch(store.audioUrl);
-  if (!response.ok) {
-    throw new Error(`Could not read live recording audio: ${response.status}`);
-  }
-  const fileData = await response.arrayBuffer();
-  if (fileData.byteLength === 0) {
-    throw new Error(
-      "The saved live recording audio is empty. Start a new live recording to download audio.",
-    );
-  }
-  return await exportAudioRecordingMp3(
-    fileData,
-    store.fileName,
-    response.headers.get("content-type"),
-  );
-}
-
-/**
- * @returns {Blob | null}
- */
-function createLiveRecordingAudioBlob() {
-  const pcm = livePipeline.capturedPcm.value;
-  if (!pcm) return null;
-  return createWavBlobFromPcm(pcm, { sampleRate: 16000 });
-}
-
-/**
- * @param {ArrayBuffer} wavData
- * @param {string} fileName
- * @returns {Promise<ArrayBuffer>}
- */
-function exportLiveRecordingMp3(wavData, fileName) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      new URL("@/workers/ffmpegWorker.js", import.meta.url),
-      {
-        type: "module",
-      },
-    );
-
-    const cleanup = () => {
-      worker.terminate();
-    };
-
-    worker.onmessage = (event) => {
-      const { type, payload } = event.data;
-      if (type === "mp3-complete") {
-        cleanup();
-        resolve(payload.mp3Data);
-        return;
-      }
-      if (type === "error") {
-        cleanup();
-        reject(new Error(payload?.message || "MP3 export failed"));
-      }
-    };
-
-    worker.onerror = (error) => {
-      cleanup();
-      reject(new Error(`FFmpeg worker error: ${error.message}`));
-    };
-
-    worker.postMessage(
-      {
-        type: "export-mp3",
-        payload: {
-          wavData,
-          fileName: `${transcriptBaseName(fileName || "live-recording")}.wav`,
-        },
-      },
-      [wavData],
-    );
-  });
-}
-
-/**
- * @param {ArrayBuffer} fileData
- * @param {string} fileName
- * @param {string | null} mimeType
- * @returns {Promise<ArrayBuffer>}
- */
-function exportAudioRecordingMp3(fileData, fileName, mimeType = null) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      new URL("@/workers/ffmpegWorker.js", import.meta.url),
-      {
-        type: "module",
-      },
-    );
-
-    const cleanup = () => {
-      worker.terminate();
-    };
-
-    worker.onmessage = (event) => {
-      const { type, payload } = event.data;
-      if (type === "mp3-complete") {
-        cleanup();
-        resolve(payload.mp3Data);
-        return;
-      }
-      if (type === "error") {
-        cleanup();
-        reject(new Error(payload?.message || "MP3 export failed"));
-      }
-    };
-
-    worker.onerror = (error) => {
-      cleanup();
-      reject(new Error(`FFmpeg worker error: ${error.message}`));
-    };
-
-    worker.postMessage(
-      {
-        type: "export-audio-mp3",
-        payload: {
-          fileData,
-          fileName: liveRecordingAudioInputName(fileName, mimeType),
-          mimeType,
-        },
-      },
-      [fileData],
-    );
-  });
-}
-
-/**
- * @param {string} fileName
- * @param {string | null} mimeType
- * @returns {string}
- */
-function liveRecordingAudioInputName(fileName, mimeType) {
-  const baseName = transcriptBaseName(fileName || "live-recording");
-  if (mimeType?.includes("wav")) return `${baseName}.wav`;
-  if (mimeType?.includes("mpeg") || mimeType?.includes("mp3"))
-    return `${baseName}.mp3`;
-  if (mimeType?.includes("webm")) return `${baseName}.webm`;
-  if (mimeType?.includes("ogg")) return `${baseName}.ogg`;
-  return `${baseName}.wav`;
 }
 
 function formatDuration(seconds) {
@@ -1134,10 +1063,14 @@ function handleSpeakerColorChange(speakerId, event) {
 async function playSegment(segment) {
   const audio = audioRef.value;
   if (!audio) return;
-  audio.currentTime = Math.max(0, segment.start || 0);
-  currentPlaybackTime.value = audio.currentTime;
-  await audio.play();
-  isAudioPlaying.value = true;
+  if (!(await seekAudioAbsolute(Math.max(0, segment.start || 0)))) return;
+  audioSeekCoordinator.setPlaybackIntent(true);
+  try {
+    await audio.play();
+  } catch {
+    audioSeekCoordinator.setPlaybackIntent(false);
+    isAudioPlaying.value = false;
+  }
   await scrollSegmentIntoView(segment.id);
 }
 
@@ -1177,23 +1110,40 @@ async function toggleAudioPlayback() {
   const audio = audioRef.value;
   if (!audio) return;
   if (audio.paused) {
-    await audio.play();
-    isAudioPlaying.value = true;
+    audioSeekCoordinator.setPlaybackIntent(true);
+    try {
+      await audio.play();
+    } catch {
+      audioSeekCoordinator.setPlaybackIntent(false);
+      isAudioPlaying.value = false;
+    }
   } else {
+    audioSeekCoordinator.setPlaybackIntent(false);
     audio.pause();
-    isAudioPlaying.value = false;
   }
+}
+
+function handleAudioPlay() {
+  audioSeekCoordinator.handleMediaPlay();
+}
+
+function handleAudioPause() {
+  audioSeekCoordinator.handleMediaPause();
 }
 
 function handleAudioTimeUpdate(event) {
   const audio = /** @type {HTMLAudioElement} */ (event.target);
-  currentPlaybackTime.value = audio.currentTime;
-  playbackProgress.value = audio.duration
-    ? Math.min(1, Math.max(0, audio.currentTime / audio.duration))
+  const partStart =
+    activeAudioManifest.value?.parts[activeAudioPartIndex.value]?.start ?? 0;
+  currentPlaybackTime.value = partStart + audio.currentTime;
+  const duration = activeAudioManifest.value?.duration ?? audio.duration;
+  playbackProgress.value = duration
+    ? Math.min(1, Math.max(0, currentPlaybackTime.value / duration))
     : 0;
 }
 
-function handleAudioEnded() {
+async function handleAudioEnded() {
+  if (await audioSeekCoordinator.continueToNextPart()) return;
   isAudioPlaying.value = false;
   playbackProgress.value = 0;
   currentPlaybackTime.value = 0;
@@ -1237,72 +1187,6 @@ function speakerStyle(speakerId) {
   };
 }
 
-async function loadWaveform(audioUrl) {
-  waveformAbortController.value?.abort();
-  waveformSamples.value = [];
-  if (!audioUrl) return;
-
-  const controller = new AbortController();
-  waveformAbortController.value = controller;
-
-  try {
-    const response = await fetch(audioUrl, { signal: controller.signal });
-    const buffer = await response.arrayBuffer();
-    if (controller.signal.aborted) return;
-
-    const AudioContextClass = window.AudioContext;
-    if (!AudioContextClass) return;
-
-    const context = new AudioContextClass();
-    const audioBuffer = await context.decodeAudioData(buffer.slice(0));
-    if (controller.signal.aborted) {
-      await context.close?.();
-      return;
-    }
-
-    waveformSamples.value = extractWaveformSamples(
-      audioBuffer,
-      DEFAULT_WAVEFORM_BAR_COUNT,
-    );
-    await context.close?.();
-  } catch (error) {
-    if (error?.name !== "AbortError") {
-      waveformSamples.value = fallbackWaveformSamples(
-        DEFAULT_WAVEFORM_BAR_COUNT,
-      );
-    }
-  }
-}
-
-function extractWaveformSamples(audioBuffer, count) {
-  const channelCount = Math.max(1, audioBuffer.numberOfChannels || 1);
-  const length = audioBuffer.length;
-  const samplesPerBar = Math.max(1, Math.floor(length / count));
-  const bars = [];
-  let maxRms = 0;
-
-  for (let barIndex = 0; barIndex < count; barIndex += 1) {
-    const start = barIndex * samplesPerBar;
-    const end = Math.min(length, start + samplesPerBar);
-    let sum = 0;
-    let sampleCount = 0;
-
-    for (let channel = 0; channel < channelCount; channel += 1) {
-      const data = audioBuffer.getChannelData(channel);
-      for (let index = start; index < end; index += 1) {
-        sum += data[index] * data[index];
-        sampleCount += 1;
-      }
-    }
-
-    const rms = Math.sqrt(sum / Math.max(1, sampleCount));
-    maxRms = Math.max(maxRms, rms);
-    bars.push(rms);
-  }
-
-  return bars.map((value) => Math.max(0.08, value / Math.max(maxRms, 0.001)));
-}
-
 function fallbackWaveformSamples(count) {
   return Array.from({ length: count }, (_, index) => {
     const value = Math.abs(Math.sin(index * 0.53) * Math.cos(index * 0.17));
@@ -1328,15 +1212,137 @@ function clearWaveformHover() {
   }
 }
 
-function seekWaveform(event) {
+async function seekWaveform(event) {
   const audio = audioRef.value;
   const ratio = getWaveformRatio(event);
-  if (!audio || ratio === null || !audio.duration) return;
+  const duration = activeAudioManifest.value?.duration ?? audio?.duration;
+  if (!audio || ratio === null || !duration) return;
 
-  audio.currentTime = ratio * audio.duration;
-  currentPlaybackTime.value = audio.currentTime;
+  if (!(await seekAudioAbsolute(ratio * duration))) return;
   playbackProgress.value = ratio;
-  scrollToPlaybackTime(audio.currentTime);
+  scrollToPlaybackTime(currentPlaybackTime.value);
+}
+
+async function seekAudioAbsolute(absoluteTime) {
+  const didSeek = await audioSeekCoordinator.seekAbsolute(absoluteTime);
+  if (!didSeek) return;
+  currentPlaybackTime.value = activeAudioManifest.value
+    ? findAudioPartAtTime(activeAudioManifest.value, absoluteTime).absoluteTime
+    : Math.max(0, absoluteTime);
+  return true;
+}
+
+async function loadAudioPart(partIndex, relativeTime = 0, options = {}) {
+  const manifest = activeAudioManifest.value;
+  const transcriptId = activeTranscriptId.value;
+  const part = manifest?.parts?.[partIndex];
+  const isCurrent = options.isCurrent ?? (() => true);
+  if (!manifest || !transcriptId || !part || !isCurrent()) return false;
+
+  let nextUrl;
+  if (prefetchedAudioPart?.index === partIndex) {
+    if (!isCurrent()) return false;
+    nextUrl = prefetchedAudioPart.url;
+    prefetchedAudioPart = null;
+  } else {
+    const blob = await transcriptionAudioAssets.getPartBlob(transcriptId, part);
+    if (!isCurrent()) return false;
+    nextUrl = URL.createObjectURL(blob);
+  }
+  if (!isCurrent()) {
+    URL.revokeObjectURL(nextUrl);
+    return false;
+  }
+  if (store.audioUrl && store.audioUrl !== nextUrl)
+    URL.revokeObjectURL(store.audioUrl);
+  store.audioUrl = nextUrl;
+  await nextTick();
+  if (!isCurrent()) return false;
+  const audio = audioRef.value;
+  if (!audio) return false;
+  audio.load();
+  try {
+    await waitForAudioMetadata(audio);
+  } catch (error) {
+    if (!isCurrent()) return false;
+    throw error;
+  }
+  if (!isCurrent()) return false;
+  audio.currentTime = Math.min(
+    Math.max(0, relativeTime),
+    Math.max(0, audio.duration || relativeTime),
+  );
+  await waitForAudioSeek(audio);
+  if (!isCurrent()) return false;
+  activeAudioPartIndex.value = partIndex;
+  currentPlaybackTime.value = part.start + audio.currentTime;
+  playbackProgress.value = manifest.duration
+    ? Math.min(1, Math.max(0, currentPlaybackTime.value / manifest.duration))
+    : 0;
+  void prefetchAudioPart(partIndex + 1);
+  return true;
+}
+
+async function prefetchAudioPart(partIndex) {
+  const part = activeAudioManifest.value?.parts?.[partIndex];
+  const transcriptId = activeTranscriptId.value;
+  if (!part || !transcriptId || prefetchedAudioPart?.index === partIndex)
+    return;
+  disposePrefetchedAudioPart();
+  try {
+    const blob = await transcriptionAudioAssets.getPartBlob(transcriptId, part);
+    if (activeAudioManifest.value?.parts?.[partIndex] !== part) return;
+    prefetchedAudioPart = { index: partIndex, url: URL.createObjectURL(blob) };
+  } catch (error) {
+    console.warn("[transcription] Could not prefetch audio part:", error);
+  }
+}
+
+function disposePrefetchedAudioPart() {
+  if (prefetchedAudioPart?.url) URL.revokeObjectURL(prefetchedAudioPart.url);
+  prefetchedAudioPart = null;
+}
+
+function waitForAudioMetadata(audio) {
+  if (audio.readyState >= 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("error", onError);
+    };
+    const onLoaded = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("Saved transcript audio could not be loaded"));
+    };
+    audio.addEventListener("loadedmetadata", onLoaded, { once: true });
+    audio.addEventListener("error", onError, { once: true });
+  });
+}
+
+function waitForAudioSeek(audio) {
+  if (!audio.seeking) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      audio.removeEventListener("seeked", onSeeked);
+      audio.removeEventListener("error", onError);
+    };
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(
+        new Error("Saved transcript audio could not seek to that position"),
+      );
+    };
+    audio.addEventListener("seeked", onSeeked, { once: true });
+    audio.addEventListener("error", onError, { once: true });
+  });
 }
 
 function handleWaveformPointerDown(event) {
@@ -1359,8 +1365,11 @@ function handleWaveformPointerUp(event) {
 }
 
 onUnmounted(() => {
+  if (liveRecordingMp3Export.isConverting.value)
+    void liveRecordingMp3Export.cancel();
+  else void liveRecordingMp3Export.release();
+  audioSeekCoordinator.cancelPendingSeek();
   modelManager.abort();
-  waveformAbortController.value?.abort();
   if (transcriptCopiedTimeoutId !== null) {
     window.clearTimeout(transcriptCopiedTimeoutId);
   }
@@ -1370,10 +1379,10 @@ onUnmounted(() => {
   if (store.audioUrl) {
     URL.revokeObjectURL(store.audioUrl);
   }
+  disposePrefetchedAudioPart();
   if (store.isListening) {
     livePipeline.cancel();
   }
-  livePipeline.discardCapturedPcm();
 });
 </script>
 
@@ -1607,8 +1616,8 @@ onUnmounted(() => {
               :src="store.audioUrl"
               @timeupdate="handleAudioTimeUpdate"
               @ended="handleAudioEnded"
-              @pause="isAudioPlaying = false"
-              @play="isAudioPlaying = true"
+              @pause="handleAudioPause"
+              @play="handleAudioPlay"
             />
             <div
               class="mb-3 flex min-w-0 items-center gap-4 text-[11px] text-muted-foreground"
@@ -1634,13 +1643,17 @@ onUnmounted(() => {
                     class="h-3 w-3 animate-spin"
                   />
                   <Download v-else class="h-3 w-3" />
-                  <template v-if="isLiveRecordingExporting"
-                    >Encoding MP3…</template
-                  >
+                  <template v-if="isLiveRecordingExporting">
+                    Converting to MP3{{
+                      liveRecordingExportProgress > 0
+                        ? ` ${Math.round(liveRecordingExportProgress)}%`
+                        : "…"
+                    }}
+                  </template>
                   <template v-else-if="liveRecordingExportError"
-                    >Encoding failed — retry</template
+                    >Save failed, retry</template
                   >
-                  <template v-else>Save as MP3</template>
+                  <template v-else>Save MP3</template>
                 </button>
               </template>
             </div>
@@ -2382,8 +2395,6 @@ onUnmounted(() => {
           "
           :phase="store.processPhase"
           :enable-diarization="isReprocessing ? true : store.enableDiarization"
-          :transcoding-progress="store.transcodingProgress"
-          :vad-progress="store.vadProgress"
           :transcription-progress="store.transcriptionProgress"
           :diarization-progress="store.diarizationProgress"
           :sortformer-load-progress="store.sortformerLoadProgress"

@@ -68,13 +68,14 @@ async function ensureModulesLoaded() {
   }
 }
 
-const postWorkerError = (code, err) => {
+const postWorkerError = (code, err, requestId = undefined) => {
   if (typeof console !== "undefined") {
     console.error(`[diarization-worker][${code}]`, err);
   }
   if (!cancelled) {
     self.postMessage({
       type: "error",
+      requestId,
       payload: {
         code,
         message: describeError(err),
@@ -116,6 +117,10 @@ let cancelled = false;
 let sortformerSession = null;
 /** @type {AbortController | null} */
 let abortController = null;
+/** @type {InstanceType<NonNullable<typeof transcriptProcessingCore>['SortformerProcessor']>} */
+let sortformerProcessor = null;
+/** @type {Float32Array[]} */
+let predictionChunks = [];
 
 const SAMPLE_RATE = 16000;
 const MEL_FEATURE_DIM = 128;
@@ -125,95 +130,99 @@ const SORTFORMER_HIDDEN = 512;
 const PADDED_BATCH_FLOATS = MAX_DIARIZE_FRAMES * MEL_FEATURE_DIM;
 
 self.onmessage = async (e) => {
-  const { type, payload } = e.data;
+  const { type, payload, requestId } = e.data;
 
   switch (type) {
+    case "init":
+      try {
+        await initializeSession(payload.runtime || "wasm");
+        if (!cancelled)
+          self.postMessage({ type: "ready", requestId, payload: {} });
+      } catch (err) {
+        postWorkerError("DIARIZATION_INIT_FAILED", err, requestId);
+      }
+      break;
+
+    case "process-window":
+      try {
+        const pcm = new Float32Array(payload.pcmBuffer);
+        await processPcmWindow(pcm, (windowPercent) => {
+          if (cancelled) return;
+          const totalWindows = Math.max(1, Number(payload.totalWindows || 1));
+          const percent =
+            ((Number(payload.windowIndex || 0) + windowPercent / 100) /
+              totalWindows) *
+            100;
+          self.postMessage({ type: "progress", payload: { percent } });
+        });
+        if (!cancelled) {
+          self.postMessage({ type: "window-complete", requestId, payload: {} });
+        }
+      } catch (err) {
+        postWorkerError("DIARIZATION_WINDOW_FAILED", err, requestId);
+      }
+      break;
+
+    case "finalize":
+      try {
+        const result = await finalizeSession(payload.segments || []);
+        if (!cancelled)
+          self.postMessage({ type: "complete", requestId, payload: result });
+      } catch (err) {
+        postWorkerError("DIARIZATION_FINALIZE_FAILED", err, requestId);
+      } finally {
+        resetProcessor();
+      }
+      break;
+
     case "process":
       try {
-        cancelled = false;
-        abortController = new AbortController();
-        await runStage("ensure-modules-loaded", () => ensureModulesLoaded());
-        await runStage("init-transcript-processing-core", () =>
-          transcriptProcessingCore.initTranscriptProcessingCore(
-            "/wasm/transcript-processing-core_bg.wasm",
-          ),
-        );
-        await runStage("load-sortformer", () =>
-          loadSortformer(payload.runtime || "wasm", abortController.signal),
-        );
-
+        await initializeSession(payload.runtime || "wasm");
         const pcm = new Float32Array(payload.pcmBuffer);
         const segments = payload.segments || [];
-        const diarizationLabels = await runStage("diarize-pcm", () =>
-          diarizePcm(pcm, (percent) => {
+        await runStage("diarize-pcm", () =>
+          processPcmWindow(pcm, (percent) => {
             if (!cancelled) {
               self.postMessage({ type: "progress", payload: { percent } });
             }
           }),
         );
-
-        if (cancelled) return;
-
-        const words = postProcessing.flattenSegmentWords(segments);
-        const constructed = words.length
-          ? await runStage("construct-sentences", () =>
-              transcriptProcessingCore.constructSentences(
-                transcriptProcessingCore.prepareWords(words),
-                diarizationLabels,
-                false,
-              ),
-            )
-          : [];
-        const constructedSegments =
-          postProcessing.normalizeConstructedSegments(constructed);
-        const inputUtteranceIds = Array.from(
-          new Set(
-            words
-              .map((word) => Number(word.utteranceId))
-              .filter((id) => Number.isFinite(id)),
-          ),
-        );
-        const outputSpeakers = Array.from(
-          new Set(
-            constructedSegments
-              .map((segment) => segment.speaker)
-              .filter(Boolean),
-          ),
-        );
-
-        self.postMessage({
-          type: "complete",
-          payload: {
-            segments: constructedSegments.length
-              ? constructedSegments
-              : segments,
-            diagnostics: {
-              labelCount: diarizationLabels?.length ?? 0,
-              inputWordCount: words.length,
-              inputUtteranceIds,
-              inputSegmentCount: segments.length,
-              outputSegmentCount: constructedSegments.length,
-              outputSpeakers,
-              outputPreview: constructedSegments.slice(0, 8).map((segment) => ({
-                start: segment.start,
-                end: segment.end,
-                speaker: segment.speaker,
-                text: segment.text.slice(0, 120),
-              })),
-            },
-          },
-        });
+        if (!cancelled)
+          self.postMessage({
+            type: "complete",
+            payload: await finalizeSession(segments),
+          });
       } catch (err) {
         postWorkerError("DIARIZATION_FAILED", err);
+      } finally {
+        resetProcessor();
       }
       break;
 
     case "cancel":
       cancelled = true;
       abortController?.abort();
+      resetProcessor();
       break;
   }
 };
+
+async function initializeSession(runtime) {
+  cancelled = false;
+  abortController = new AbortController();
+  resetProcessor();
+  await runStage("ensure-modules-loaded", () => ensureModulesLoaded());
+  await runStage("init-transcript-processing-core", () =>
+    transcriptProcessingCore.initTranscriptProcessingCore(
+      "/wasm/transcript-processing-core_bg.wasm",
+    ),
+  );
+  await runStage("load-sortformer", () =>
+    loadSortformer(runtime, abortController.signal),
+  );
+  sortformerProcessor = new transcriptProcessingCore.SortformerProcessor();
+  predictionChunks = [];
+}
 
 /**
  * @param {'webgpu' | 'wasm'} runtime
@@ -255,83 +264,114 @@ function configureOrt() {
  * @param {Float32Array} pcm
  * @param {(percent: number) => void} onProgress
  */
-async function diarizePcm(pcm, onProgress) {
-  if (!sortformerSession)
+async function processPcmWindow(pcm, onProgress) {
+  if (!sortformerSession || !sortformerProcessor) {
     throw new Error("Sortformer session is not initialized");
-  const processor = new transcriptProcessingCore.SortformerProcessor();
-  const melChunks = [];
-  let totalFrames = 0;
+  }
+  const melWindowCount = Math.max(1, Math.ceil(pcm.length / MEL_CHUNK_SAMPLES));
 
-  try {
-    for (
-      let start = 0;
-      start < pcm.length && !cancelled;
-      start += MEL_CHUNK_SAMPLES
-    ) {
-      const window = pcm.slice(
-        start,
-        Math.min(pcm.length, start + MEL_CHUNK_SAMPLES),
-      );
-      const mel = transcriptProcessingCore.computeMelSpectrogram(window);
-      if (mel.length) {
-        melChunks.push(mel);
-        totalFrames += mel.length / MEL_FEATURE_DIM;
-      }
-    }
-
-    if (!totalFrames) return new Float32Array(0);
-
-    const totalBatches = Math.ceil(totalFrames / MAX_DIARIZE_FRAMES);
-    const batchResults = [];
+  for (
+    let start = 0, melWindowIndex = 0;
+    start < pcm.length && !cancelled;
+    start += MEL_CHUNK_SAMPLES, melWindowIndex += 1
+  ) {
+    const window = pcm.subarray(
+      start,
+      Math.min(pcm.length, start + MEL_CHUNK_SAMPLES),
+    );
+    const mel = transcriptProcessingCore.computeMelSpectrogram(window);
+    const frameCount = mel.length / MEL_FEATURE_DIM;
+    const batchCount = Math.max(1, Math.ceil(frameCount / MAX_DIARIZE_FRAMES));
 
     for (
       let batchIndex = 0;
-      batchIndex < totalBatches && !cancelled;
-      batchIndex++
+      batchIndex < batchCount && !cancelled;
+      batchIndex += 1
     ) {
       const frameOffset = batchIndex * MAX_DIARIZE_FRAMES;
       const framesInBatch = Math.min(
         MAX_DIARIZE_FRAMES,
-        totalFrames - frameOffset,
+        frameCount - frameOffset,
       );
-      let batchFeatures = extractMelFrames(
-        melChunks,
-        frameOffset,
-        framesInBatch,
-      );
+      if (framesInBatch <= 0) continue;
+      let batchFeatures = extractMelFrames([mel], frameOffset, framesInBatch);
       let feedFrames = framesInBatch;
-
       if (framesInBatch < MAX_DIARIZE_FRAMES) {
         const padded = new Float32Array(PADDED_BATCH_FLOATS);
         padded.set(batchFeatures);
         batchFeatures = padded;
         feedFrames = MAX_DIARIZE_FRAMES;
       }
-
-      const chunkPredictions = await processSortformerBatch(
-        processor,
-        batchFeatures,
-        feedFrames,
-        framesInBatch,
+      predictionChunks.push(
+        await processSortformerBatch(
+          sortformerProcessor,
+          batchFeatures,
+          feedFrames,
+          framesInBatch,
+        ),
       );
-      batchResults.push(chunkPredictions);
-      onProgress(((batchIndex + 1) / totalBatches) * 100);
+      const completed = melWindowIndex + (batchIndex + 1) / batchCount;
+      onProgress((completed / melWindowCount) * 100);
     }
-
-    const totalPredictionRows = batchResults.reduce(
-      (sum, result) => sum + result.length / 4,
-      0,
-    );
-    const allPredictions = new Float32Array(totalPredictionRows * 4);
-    let offset = 0;
-    for (const result of batchResults) {
-      allPredictions.set(result, offset);
-      offset += result.length;
-    }
-    return processor.finalizeAssignment(allPredictions);
-  } finally {
-    processor.free();
   }
+}
+
+async function finalizeSession(segments) {
+  if (!sortformerProcessor)
+    throw new Error("Sortformer session is not initialized");
+  const totalFloats = predictionChunks.reduce(
+    (sum, result) => sum + result.length,
+    0,
+  );
+  const allPredictions = new Float32Array(totalFloats);
+  let offset = 0;
+  for (const result of predictionChunks) {
+    allPredictions.set(result, offset);
+    offset += result.length;
+  }
+  const diarizationLabels =
+    sortformerProcessor.finalizeAssignment(allPredictions);
+  const words = postProcessing.flattenSegmentWords(segments);
+  const constructed = words.length
+    ? await runStage("construct-sentences", () =>
+        transcriptProcessingCore.constructSentences(
+          transcriptProcessingCore.prepareWords(words),
+          diarizationLabels,
+          false,
+        ),
+      )
+    : [];
+  const constructedSegments =
+    postProcessing.normalizeConstructedSegments(constructed);
+  const inputUtteranceIds = Array.from(
+    new Set(
+      words
+        .map((word) => Number(word.utteranceId))
+        .filter((id) => Number.isFinite(id)),
+    ),
+  );
+  const outputSpeakers = Array.from(
+    new Set(
+      constructedSegments.map((segment) => segment.speaker).filter(Boolean),
+    ),
+  );
+  return {
+    segments: constructedSegments.length ? constructedSegments : segments,
+    diagnostics: {
+      labelCount: diarizationLabels?.length ?? 0,
+      inputWordCount: words.length,
+      inputUtteranceIds,
+      inputSegmentCount: segments.length,
+      outputSegmentCount: constructedSegments.length,
+      outputSpeakers,
+    },
+  };
+}
+
+function resetProcessor() {
+  if (sortformerProcessor) sortformerProcessor.free();
+  sortformerProcessor = null;
+  predictionChunks = [];
 }
 
 /**
@@ -417,29 +457,27 @@ async function processSortformerBatch(
     ),
   };
 
-  const outputs = await sortformerSession.run(inputs);
-  const predictions = /** @type {Float32Array | undefined} */ (
-    outputs.spkcache_fifo_chunk_preds?.data
-  );
-  const embeddings = /** @type {Float32Array | undefined} */ (
-    outputs.chunk_pre_encode_embs?.data
-  );
-  if (!predictions || !embeddings) {
-    throw new Error(
-      "Sortformer did not return speaker predictions and embeddings",
+  let outputs = {};
+  try {
+    outputs = await sortformerSession.run(inputs);
+    const predictions = /** @type {Float32Array | undefined} */ (
+      outputs.spkcache_fifo_chunk_preds?.data
     );
+    const embeddings = /** @type {Float32Array | undefined} */ (
+      outputs.chunk_pre_encode_embs?.data
+    );
+    if (!predictions || !embeddings) {
+      throw new Error(
+        "Sortformer did not return speaker predictions and embeddings",
+      );
+    }
+
+    const downsampledFrames = Math.ceil(actualFrameCount / 8);
+    return processor.processChunk(predictions, embeddings, downsampledFrames);
+  } finally {
+    Object.values(inputs).forEach((tensor) => tensor.dispose?.());
+    Object.values(outputs).forEach((tensor) => tensor.dispose?.());
   }
-
-  const downsampledFrames = Math.ceil(actualFrameCount / 8);
-  const result = processor.processChunk(
-    predictions,
-    embeddings,
-    downsampledFrames,
-  );
-
-  Object.values(inputs).forEach((tensor) => tensor.dispose?.());
-  Object.values(outputs).forEach((tensor) => tensor.dispose?.());
-  return result;
 }
 
 function describeError(err) {

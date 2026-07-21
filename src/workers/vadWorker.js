@@ -7,7 +7,6 @@
  *     { type: "cancel" }
  *
  *   Worker → Main:
- *     { type: "progress", payload: { percent: number } }
  *     { type: "complete", payload: { regions: Array<{ start: number, end: number }> } }
  *     { type: "error", payload: { code: string, message: string } }
  */
@@ -15,6 +14,10 @@
 import { detectSpeechRegions } from "@/features/transcription/lib/vadSignal.js";
 
 let cancelled = false;
+const workerScope =
+  /** @type {{ postMessage: (message: unknown, transfer?: Transferable[]) => void }} */ (
+    self
+  );
 
 self.onmessage = async (e) => {
   const { type, payload } = e.data;
@@ -24,14 +27,16 @@ self.onmessage = async (e) => {
       cancelled = false;
       try {
         const pcm = new Float32Array(payload.pcmData);
-        const regions = await detectSpeechRegions(pcm, (percent) => {
-          if (!cancelled) {
-            self.postMessage({ type: "progress", payload: { percent } });
-          }
-        });
+        const regions = await detectSpeechRegions(pcm);
 
         if (!cancelled) {
-          self.postMessage({ type: "complete", payload: { regions } });
+          workerScope.postMessage(
+            {
+              type: "complete",
+              payload: { regions, pcmData: payload.pcmData },
+            },
+            [payload.pcmData],
+          );
         }
       } catch (err) {
         if (!cancelled) {

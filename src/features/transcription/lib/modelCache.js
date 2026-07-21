@@ -71,7 +71,42 @@ export async function getCachedModel(cacheKey) {
  * @returns {Promise<boolean>}
  */
 export async function hasCachedModel(cacheKey) {
-  return (await getCachedModel(cacheKey)) !== null;
+  const db = await openTranscriptionModelDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db
+        .transaction(MODEL_STORE, "readonly")
+        .objectStore(MODEL_STORE)
+        .getKey(cacheKey);
+      request.onsuccess = () => resolve(request.result !== undefined);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Read cache keys without cloning the model ArrayBuffer payloads.
+ * @returns {Promise<string[]>}
+ */
+export async function listCachedModelKeys() {
+  const db = await openTranscriptionModelDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db
+        .transaction(MODEL_STORE, "readonly")
+        .objectStore(MODEL_STORE)
+        .getAllKeys();
+      request.onsuccess = () =>
+        resolve(
+          (request.result || []).filter((key) => typeof key === "string"),
+        );
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -153,13 +188,25 @@ export async function getOrDownloadModelAsset(assetKey, signal, onProgress) {
   const totalBytes =
     Number(response.headers.get("content-length") || 0) || null;
   const reader = response.body.getReader();
+  let preallocated = totalBytes ? new Uint8Array(totalBytes) : null;
   const chunks = [];
   let receivedBytes = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
+    if (
+      preallocated &&
+      receivedBytes + value.byteLength <= preallocated.byteLength
+    ) {
+      preallocated.set(value, receivedBytes);
+    } else {
+      if (preallocated) {
+        chunks.push(preallocated.subarray(0, receivedBytes));
+        preallocated = null;
+      }
+      chunks.push(value);
+    }
     receivedBytes += value.byteLength;
     onProgress?.({
       assetKey,
@@ -170,11 +217,18 @@ export async function getOrDownloadModelAsset(assetKey, signal, onProgress) {
     });
   }
 
-  const bytes = new Uint8Array(receivedBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+  let bytes = preallocated
+    ? preallocated.byteLength === receivedBytes
+      ? preallocated
+      : preallocated.slice(0, receivedBytes)
+    : null;
+  if (!bytes) {
+    bytes = new Uint8Array(receivedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
   }
 
   await putCachedModel(asset.cacheKey, bytes.buffer, receivedBytes);

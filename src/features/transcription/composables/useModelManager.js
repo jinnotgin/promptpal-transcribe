@@ -6,7 +6,8 @@ import {
   clearCachedModels,
   getCachedModel,
   getOrDownloadModelAsset,
-  openTranscriptionModelDb,
+  hasCachedModel,
+  listCachedModelKeys,
 } from "@/features/transcription/lib/modelCache.js";
 
 /**
@@ -22,8 +23,7 @@ export function useModelManager(store) {
 
   async function checkCache() {
     try {
-      const cached = await listCachedEntries();
-      const keys = new Set(cached.map((entry) => entry.cacheKey));
+      const keys = new Set(await listCachedModelKeys());
 
       const parakeetKeys = [
         "parakeet-encoder-fp16",
@@ -38,25 +38,6 @@ export function useModelManager(store) {
       store.sortformerCached = keys.has("sortformer-diarization");
     } catch (err) {
       console.warn("Failed to check model cache:", err);
-    }
-  }
-
-  /**
-   * @returns {Promise<Array<{ cacheKey: string, data: ArrayBuffer, downloadedAt: string, sizeBytes: number }>>}
-   */
-  async function listCachedEntries() {
-    const db = await openTranscriptionModelDb();
-    try {
-      return await new Promise((resolve, reject) => {
-        const request = db
-          .transaction("modelCache", "readonly")
-          .objectStore("modelCache")
-          .getAll();
-        request.onsuccess = () => resolve(request.result || []);
-        request.onerror = () => reject(request.error);
-      });
-    } finally {
-      db.close();
     }
   }
 
@@ -132,7 +113,7 @@ export function useModelManager(store) {
    * call this for ASR because workers own model loading during processing.
    * @param {'webgpu' | 'wasm'} runtime
    * @param {boolean} diarization
-   * @returns {Promise<Record<string, ArrayBuffer>>}
+   * @returns {Promise<void>}
    */
   async function ensureModelsReady(runtime, diarization) {
     abortController = new AbortController();
@@ -140,19 +121,14 @@ export function useModelManager(store) {
     const requiredKeys = getRequiredAssetKeys(runtime, diarization);
     const reportPrefetchProgress = createPrefetchProgressReporter(requiredKeys);
 
-    /** @type {Record<string, ArrayBuffer>} */
-    const buffers = {};
-    await Promise.all(
-      requiredKeys.map(async (key) => {
-        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-        buffers[key] = await downloadAsset(key, signal, reportPrefetchProgress);
-      }),
-    );
+    for (const key of requiredKeys) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      await downloadAsset(key, signal, reportPrefetchProgress);
+    }
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
     await checkCache();
-    return buffers;
   }
 
   /**
@@ -182,6 +158,12 @@ export function useModelManager(store) {
   async function ensureDiarizationModel() {
     abortController = abortController || new AbortController();
     const signal = abortController.signal;
+    if (await hasCachedModel(MODEL_ASSETS.diarization.cacheKey)) {
+      store.processPhase = "loading-diarization-model";
+      store.sortformerLoadProgress = 100;
+      store.sortformerCached = true;
+      return;
+    }
     await getOrDownloadModelAsset("diarization", signal, (progress) => {
       if (progress.source === "cache") {
         store.processPhase = "loading-diarization-model";

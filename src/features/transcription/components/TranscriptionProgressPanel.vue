@@ -2,12 +2,14 @@
 import { computed } from "vue";
 import { Loader2, X, CheckCircle2, Circle } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
+import {
+  createProgressStages,
+  getProgressStageKey,
+} from "@/features/transcription/lib/progressStageModel.js";
 
 const props = defineProps({
   phase: { type: String, required: true },
   enableDiarization: { type: Boolean, default: true },
-  transcodingProgress: { type: Number, default: 0 },
-  vadProgress: { type: Number, default: 0 },
   transcriptionProgress: { type: Number, default: 0 },
   diarizationProgress: { type: Number, default: 0 },
   sortformerLoadProgress: { type: Number, default: 0 },
@@ -17,31 +19,11 @@ const props = defineProps({
 const emit = defineEmits(["cancel"]);
 
 const stages = computed(() => {
-  const base = [
-    { key: "downloading-model", label: "Preparing models" },
-    { key: "transcoding", label: "Preparing audio" },
-    { key: "vad", label: "Detecting speech" },
-    { key: "transcribing", label: "Transcribing" },
-  ];
-  if (props.enableDiarization) {
-    base.push({ key: "diarizing", label: "Identifying speakers" });
-  }
-  return base;
+  return createProgressStages(props.enableDiarization);
 });
 
 const currentStageIndex = computed(() => {
-  const phaseToStage = {
-    "checking-cache": "downloading-model",
-    "downloading-model": "downloading-model",
-    "loading-model": "downloading-model",
-    "downloading-diarization-model": "downloading-model",
-    "loading-diarization-model": "downloading-model",
-    transcoding: "transcoding",
-    vad: "vad",
-    transcribing: "transcribing",
-    diarizing: "diarizing",
-  };
-  const targetKey = phaseToStage[props.phase];
+  const targetKey = getProgressStageKey(props.phase);
   const idx = stages.value.findIndex((stage) => stage.key === targetKey);
   return idx === -1 ? 0 : idx;
 });
@@ -84,8 +66,6 @@ const currentProgress = computed(() => {
   }
   const progressMap = {
     "downloading-model": props.transcriptionProgress,
-    transcoding: props.transcodingProgress,
-    vad: props.vadProgress,
     transcribing: props.transcriptionProgress,
     diarizing: props.diarizationProgress,
   };
@@ -190,8 +170,8 @@ function stageState(index) {
 
     <p class="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
       This transcription is running locally on your computer. Larger files can
-      take a while, and your computer may use more CPU or memory until it's
-      done.
+      take a while, and your computer may use more resources and power until
+      it's done.
     </p>
   </div>
 </template>

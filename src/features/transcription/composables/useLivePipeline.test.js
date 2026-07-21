@@ -202,7 +202,7 @@ describe("useLivePipeline microphone switching", () => {
     const pipeline = useLivePipeline(store);
     await pipeline.start();
 
-    mockCaptureOptions.onEnded();
+    await mockCaptureOptions.onEnded();
 
     expect(mockMic.interrupt).toHaveBeenCalled();
     expect(store.isListening).toBe(true);
@@ -225,5 +225,22 @@ describe("useLivePipeline microphone switching", () => {
     expect(mockMic.resume).not.toHaveBeenCalled();
     expect(store.micInputState).toBe("unavailable");
     expect(store.micInputError).toMatchObject({ code: "MIC_UNAVAILABLE" });
+  });
+
+  it("keeps an interrupted session paused on the active timeline when retry fails", async () => {
+    const store = createStore();
+    mockMic.start.mockImplementation(async () => {
+      store.isListening = true;
+      store.isPaused = false;
+    });
+    const pipeline = useLivePipeline(store);
+    await pipeline.start();
+    await mockCaptureOptions.onEnded();
+    mockMic.switchDevice.mockRejectedValueOnce(new Error("MIC_UNAVAILABLE"));
+
+    await expect(pipeline.retryInput()).rejects.toThrow("MIC_UNAVAILABLE");
+
+    expect(store.micInputState).toBe("interrupted");
+    expect(store.micInputError).toMatchObject({ code: "MIC_SWITCH_FAILED" });
   });
 });

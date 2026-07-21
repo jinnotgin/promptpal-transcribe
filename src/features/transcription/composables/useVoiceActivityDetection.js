@@ -1,10 +1,11 @@
 /**
  * Composable that runs VAD in a dedicated worker.
- * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  */
-export function useVoiceActivityDetection(store) {
+export function useVoiceActivityDetection() {
   /** @type {Worker | null} */
   let worker = null;
+  /** @type {{ worker: Worker, reject: (reason?: unknown) => void } | null} */
+  let activeRequest = null;
 
   /**
    * Detect speech regions in 16kHz mono PCM audio.
@@ -12,38 +13,68 @@ export function useVoiceActivityDetection(store) {
    * @returns {Promise<Array<{ start: number, end: number }>>}
    */
   function detect(pcm) {
-    return new Promise((resolve, reject) => {
-      worker = new Worker(new URL("@/workers/vadWorker.js", import.meta.url), {
-        type: "module",
-      });
+    return detectBuffer(pcm.buffer.slice(0)).then((result) => result.regions);
+  }
 
-      worker.onmessage = (e) => {
+  /**
+   * Transfer a bounded PCM window to VAD and receive the same buffer back.
+   * @param {Float32Array} pcm
+   * @returns {Promise<{ regions: Array<{ start: number, end: number, preChunked?: boolean }>, pcm: Float32Array }>}
+   */
+  function detectWindow(pcm) {
+    const buffer =
+      pcm.byteOffset === 0 && pcm.byteLength === pcm.buffer.byteLength
+        ? pcm.buffer
+        : pcm.slice().buffer;
+    return detectBuffer(buffer);
+  }
+
+  /**
+   * @param {ArrayBuffer} buffer
+   */
+  function detectBuffer(buffer) {
+    cancelActive(new DOMException("Superseded", "AbortError"));
+    return new Promise((resolve, reject) => {
+      const currentWorker = new Worker(
+        new URL("@/workers/vadWorker.js", import.meta.url),
+        {
+          type: "module",
+        },
+      );
+      worker = currentWorker;
+      activeRequest = { worker: currentWorker, reject };
+
+      currentWorker.onmessage = (e) => {
+        if (activeRequest?.worker !== currentWorker) return;
         const { type, payload } = e.data;
         switch (type) {
-          case "progress":
-            store.updateProgress("vad", payload.percent);
-            break;
           case "complete":
+            activeRequest = null;
             cleanup();
-            resolve(payload.regions);
+            resolve({
+              regions: payload.regions,
+              pcm: new Float32Array(payload.pcmData),
+            });
             break;
           case "error":
+            activeRequest = null;
             cleanup();
             reject(new Error(payload.message));
             break;
         }
       };
 
-      worker.onerror = (err) => {
+      currentWorker.onerror = (err) => {
+        if (activeRequest?.worker !== currentWorker) return;
+        activeRequest = null;
         cleanup();
         reject(new Error(`VAD worker error: ${err.message}`));
       };
 
-      // Transfer the underlying buffer
-      const buffer = pcm.buffer.slice(0);
-      worker.postMessage({ type: "process", payload: { pcmData: buffer } }, [
-        buffer,
-      ]);
+      currentWorker.postMessage(
+        { type: "process", payload: { pcmData: buffer } },
+        [buffer],
+      );
     });
   }
 
@@ -57,9 +88,16 @@ export function useVoiceActivityDetection(store) {
   function abort() {
     if (worker) {
       worker.postMessage({ type: "cancel" });
-      cleanup();
     }
+    cancelActive(new DOMException("Aborted", "AbortError"));
   }
 
-  return { detect, abort };
+  function cancelActive(reason) {
+    const request = activeRequest;
+    activeRequest = null;
+    request?.reject(reason);
+    cleanup();
+  }
+
+  return { detect, detectWindow, abort };
 }

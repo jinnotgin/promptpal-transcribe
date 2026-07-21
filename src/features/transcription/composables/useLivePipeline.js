@@ -9,6 +9,10 @@ import {
 } from "@/features/transcription/lib/timestampStitching.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
 import { SYSTEM_DEFAULT_MIC_ID } from "@/features/transcription/composables/useMicrophoneDevices.js";
+import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
+import { selectLiveRecordingProfile } from "@/features/transcription/lib/mediaRecorderProfile.js";
+import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
+import { createLiveWaveformAccumulator } from "@/features/transcription/lib/liveWaveformAccumulator.js";
 
 /**
  * Orchestrator for live microphone transcription.
@@ -20,6 +24,7 @@ import { SYSTEM_DEFAULT_MIC_ID } from "@/features/transcription/composables/useM
 export function useLivePipeline(store) {
   const modelManager = useModelManager(store);
   const asr = useAsrInference(store);
+  const audioAssets = useTranscriptionAudioAssets();
 
   /** @type {Worker | null} */
   let vadWorker = null;
@@ -32,16 +37,31 @@ export function useLivePipeline(store) {
   let totalPausedMs = 0;
   let utteranceQueue = Promise.resolve();
 
-  /** @type {Float32Array[]} */
-  let pcmChunks = [];
-  /** Merged PCM from the completed live session, available after stop(). */
-  const capturedPcm = ref(/** @type {Float32Array | null} */ (null));
+  const audioManifest = ref(
+    /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null} */ (
+      null
+    ),
+  );
+  const audioPersistenceError = ref(/** @type {Error | null} */ (null));
+  let waveform = createLiveWaveformAccumulator();
+  let recordingTranscriptId = null;
+  let recorderProfile = null;
+  /** @type {MediaRecorder | null} */
+  let mediaRecorder = null;
+  /** @type {Array<import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioPart>} */
+  let mediaParts = [];
+  let currentPart = null;
+  let fragmentWriteQueue = Promise.resolve();
+  let pendingFragmentWrites = 0;
+  let audioRecordingDisabled = false;
+  const MAX_PENDING_FRAGMENT_WRITES = 8;
+  const MEDIA_RECORDER_TIMESLICE_MS = 10_000;
 
   /**
    * Start a live transcription session.
    * Downloads/loads ASR model, starts mic capture, and begins streaming.
    */
-  async function start() {
+  async function start(options = {}) {
     store.clearProcessingState();
     store.segments = [];
     store.speakerNames = {};
@@ -49,14 +69,27 @@ export function useLivePipeline(store) {
     store.error = null;
     store.liveElapsed = 0;
     store.fileName = `Live Recording ${new Date().toLocaleString()}`;
-    pcmChunks = [];
-    capturedPcm.value = null;
+    recordingTranscriptId = options.transcriptId || null;
+    audioManifest.value = null;
+    mediaParts = [];
+    currentPart = null;
+    fragmentWriteQueue = Promise.resolve();
+    pendingFragmentWrites = 0;
+    audioRecordingDisabled = false;
+    waveform = createLiveWaveformAccumulator();
+    recorderProfile = null;
+    audioPersistenceError.value = null;
 
     const runtime = store.effectiveRuntime;
 
     trackAnalyticsEvent("live_transcription_started", { runtime });
 
     try {
+      if (recordingTranscriptId)
+        await audioAssets.beginStaging(recordingTranscriptId);
+      recorderProfile = recordingTranscriptId
+        ? selectLiveRecordingProfile()
+        : null;
       store.processPhase = "checking-cache";
       await modelManager.checkCache();
       await asr.initialize(runtime);
@@ -88,7 +121,7 @@ export function useLivePipeline(store) {
       pausedAt = 0;
       totalPausedMs = 0;
       elapsedInterval = setInterval(() => {
-        if (!store.isPaused) {
+        if (!store.isPaused && pausedAt === 0) {
           store.liveElapsed = Math.floor(
             (Date.now() - sessionStartTime - totalPausedMs) / 1000,
           );
@@ -105,9 +138,23 @@ export function useLivePipeline(store) {
     }
   }
 
-  function pause() {
-    mic?.pause();
+  async function pause() {
     pausedAt = Date.now();
+    try {
+      await mic?.pause();
+      if (mediaRecorder?.state === "recording") mediaRecorder.pause();
+    } catch (error) {
+      // The capture graph disables its tracks before requesting the tail
+      // flush. Keep transcription paused and fall back to text-only history
+      // if that final audio buffer cannot be committed safely.
+      store.isPaused = true;
+      store.micLevel = 0;
+      try {
+        await disableAudioPersistence(error);
+      } catch {
+        // The original flush failure remains available to the UI.
+      }
+    }
   }
 
   function resume() {
@@ -126,33 +173,60 @@ export function useLivePipeline(store) {
       pausedAt = 0;
     }
     mic?.resume();
+    if (mediaRecorder?.state === "paused") mediaRecorder.resume();
   }
 
   async function switchInput(deviceId) {
     const previousMicId = store.selectedMicId;
     const previousMicLabel = store.selectedMicLabel;
+    const previousInputState = store.micInputState;
     store.selectMicrophone(deviceId);
     if (!store.isListening || !mic) {
       return;
     }
 
     const wasPaused = store.isPaused;
+    const switchStartedAt = Date.now();
+    if (!wasPaused && pausedAt === 0) pausedAt = switchStartedAt;
     store.setMicInputState("switching");
     store.setMicInputError(null);
 
     try {
+      await finishMediaPart(currentActiveSeconds());
       await mic.switchDevice({
         deviceId: selectedCaptureDeviceId(),
       });
       if (wasPaused) {
         store.isPaused = true;
+        if (mediaRecorder?.state === "recording") mediaRecorder.pause();
+      } else {
+        totalPausedMs += Date.now() - pausedAt;
+        pausedAt = 0;
       }
       store.setMicInputState("ready");
     } catch (err) {
+      if (!wasPaused && previousInputState !== "interrupted") {
+        totalPausedMs += Date.now() - pausedAt;
+        pausedAt = 0;
+      }
+      const previousStream = mic.getStream?.();
+      if (
+        previousInputState !== "interrupted" &&
+        previousStream &&
+        !mediaRecorder
+      ) {
+        beginMediaPart(previousStream);
+      }
+      if (wasPaused && mediaRecorder?.state === "recording")
+        mediaRecorder.pause();
       store.selectMicrophone(previousMicId);
       store.selectedMicLabel = previousMicLabel;
       store.setMicInputState(
-        store.selectedMicAvailable ? "ready" : "unavailable",
+        previousInputState === "interrupted"
+          ? "interrupted"
+          : store.selectedMicAvailable
+            ? "ready"
+            : "unavailable",
       );
       store.setMicInputError({
         code: "MIC_SWITCH_FAILED",
@@ -170,6 +244,19 @@ export function useLivePipeline(store) {
   }
 
   async function stop() {
+    try {
+      await finishMediaPart(currentActiveSeconds());
+      await fragmentWriteQueue;
+      await mic?.flushAndStop?.({ updateStore: false });
+    } catch (error) {
+      audioPersistenceError.value =
+        error instanceof Error
+          ? error
+          : new Error("Could not save recording audio");
+      audioManifest.value = null;
+      if (recordingTranscriptId)
+        await audioAssets.rollbackStaging(recordingTranscriptId);
+    }
     if (vadWorker) {
       vadWorker.postMessage({ type: "flush" });
       await new Promise((r) => setTimeout(r, 200));
@@ -179,27 +266,36 @@ export function useLivePipeline(store) {
 
     cleanup();
 
-    // Merge accumulated PCM for potential reprocessing
-    if (pcmChunks.length > 0) {
-      const totalLength = pcmChunks.reduce((sum, c) => sum + c.length, 0);
-      const merged = new Float32Array(totalLength);
-      let offset = 0;
-      for (const chunk of pcmChunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
-      }
-      capturedPcm.value = merged;
-      pcmChunks = []; // free chunk references
-    }
-
     if (store.segments.length > 0) {
-      store.fileDuration = store.liveElapsed;
+      store.fileDuration = Math.max(
+        currentActiveSeconds(),
+        mediaParts.at(-1)?.end || 0,
+      );
+      store.waveformSamples = waveform.finalize();
+      if (
+        recordingTranscriptId &&
+        mediaParts.length &&
+        !audioRecordingDisabled
+      ) {
+        audioManifest.value = normalizeTranscriptAudioManifest({
+          version: 1,
+          duration: Math.max(
+            currentActiveSeconds(),
+            mediaParts.at(-1)?.end || 0,
+          ),
+          source: "live",
+          parts: mediaParts,
+        });
+      }
       store.processPhase = "complete";
       trackAnalyticsEvent("live_transcription_completed", {
         durationSec: store.liveElapsed,
         segmentCount: store.segments.length,
       });
     } else {
+      audioManifest.value = null;
+      if (recordingTranscriptId)
+        await audioAssets.rollbackStaging(recordingTranscriptId);
       store.processPhase = "idle";
     }
 
@@ -207,19 +303,20 @@ export function useLivePipeline(store) {
   }
 
   function cancel() {
+    const transcriptId = recordingTranscriptId;
+    const pendingWrites = fragmentWriteQueue;
     store.isCancelled = true;
+    stopRecorderImmediately();
     cleanup();
-    pcmChunks = [];
-    capturedPcm.value = null;
+    if (transcriptId) {
+      void pendingWrites
+        .finally(() => audioAssets.rollbackStaging(transcriptId))
+        .catch(() => {});
+    }
+    audioManifest.value = null;
     store.clearProcessingState();
     store.clearLiveState();
     trackAnalyticsEvent("live_transcription_cancelled");
-  }
-
-  /** Discard the captured PCM to free memory. */
-  function discardCapturedPcm() {
-    pcmChunks = [];
-    capturedPcm.value = null;
   }
 
   function handleVadMessage(data) {
@@ -309,21 +406,27 @@ export function useLivePipeline(store) {
           !store.isPaused &&
           store.micInputState !== "interrupted"
         ) {
-          // Clone before transfer so we can accumulate for reprocessing
-          pcmChunks.push(new Float32Array(pcm));
+          waveform.addChunk(pcm);
           const buffer = pcm.buffer.byteLength
             ? pcm.buffer
             : pcm.slice().buffer;
           vadWorker.postMessage({ type: "feed", pcm: buffer }, [buffer]);
         }
       },
-      { onEnded: handleMicrophoneEnded },
+      { onEnded: handleMicrophoneEnded, onStreamReady: beginMediaPart },
     );
   }
 
-  function handleMicrophoneEnded() {
+  async function handleMicrophoneEnded() {
     if (!store.isListening || store.isCancelled) return;
-    mic?.interrupt();
+    const interruptionTime = currentActiveSeconds();
+    if (pausedAt === 0) pausedAt = Date.now();
+    try {
+      await finishMediaPart(interruptionTime);
+      await mic?.interrupt();
+    } catch (error) {
+      await disableAudioPersistence(error);
+    }
     store.isPaused = false;
     store.setMicInputState("interrupted");
     store.setMicInputError({
@@ -334,14 +437,139 @@ export function useLivePipeline(store) {
   }
 
   function handleError(err) {
+    const transcriptId = recordingTranscriptId;
+    const pendingWrites = fragmentWriteQueue;
     console.error("[live-transcription] error:", err);
     cleanup();
+    stopRecorderImmediately();
+    if (transcriptId) {
+      void pendingWrites
+        .finally(() => audioAssets.rollbackStaging(transcriptId))
+        .catch(() => {});
+    }
     store.clearLiveState();
     store.processPhase = "error";
     store.error = classifyLiveError(err);
     trackAnalyticsEvent("live_transcription_failed", {
       errorCode: store.error.code,
     });
+  }
+
+  /** @param {MediaStream} stream */
+  function beginMediaPart(stream) {
+    if (
+      !recordingTranscriptId ||
+      !recorderProfile ||
+      store.isCancelled ||
+      audioRecordingDisabled
+    )
+      return;
+    const transcriptId = recordingTranscriptId;
+    const partIndex = mediaParts.length;
+    const recorder = new MediaRecorder(stream, {
+      mimeType: recorderProfile.mimeType,
+      audioBitsPerSecond: 64_000,
+    });
+    const mimeType = recorder.mimeType || recorderProfile.mimeType;
+    const part = {
+      index: partIndex,
+      start: currentActiveSeconds(),
+      mimeType,
+      sizeBytes: 0,
+      fragmentCount: 0,
+    };
+    currentPart = part;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (audioRecordingDisabled || !event.data?.size) return;
+      if (pendingFragmentWrites >= MAX_PENDING_FRAGMENT_WRITES) {
+        void disableAudioPersistence(
+          new Error(
+            "Browser storage is too slow to keep recording audio safely",
+          ),
+          transcriptId,
+        );
+        return;
+      }
+      const fragmentIndex = part.fragmentCount;
+      part.fragmentCount += 1;
+      part.sizeBytes += event.data.size;
+      pendingFragmentWrites += 1;
+      fragmentWriteQueue = fragmentWriteQueue
+        .then(async () => {
+          await audioAssets.assertStorageHeadroom(event.data.size);
+          await audioAssets.stageFragment({
+            transcriptId,
+            partIndex,
+            fragmentIndex,
+            blob: event.data,
+          });
+        })
+        .catch((error) => disableAudioPersistence(error, transcriptId))
+        .finally(() => {
+          if (recordingTranscriptId === transcriptId)
+            pendingFragmentWrites -= 1;
+        });
+    });
+    mediaRecorder = recorder;
+    recorder.start(MEDIA_RECORDER_TIMESLICE_MS);
+  }
+
+  async function disableAudioPersistence(
+    error,
+    transcriptId = recordingTranscriptId,
+  ) {
+    if (!transcriptId) return;
+    if (recordingTranscriptId !== transcriptId) {
+      await audioAssets.rollbackStaging(transcriptId);
+      return;
+    }
+    if (audioRecordingDisabled) return;
+    audioRecordingDisabled = true;
+    audioPersistenceError.value =
+      error instanceof Error
+        ? error
+        : new Error("Could not save recording audio");
+    stopRecorderImmediately();
+    await audioAssets.rollbackStaging(transcriptId);
+  }
+
+  async function finishMediaPart(endTime) {
+    const recorder = mediaRecorder;
+    const part = currentPart;
+    if (!recorder || !part) return;
+    mediaRecorder = null;
+    currentPart = null;
+    if (recorder.state !== "inactive") {
+      await new Promise((resolve) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+        recorder.stop();
+      });
+    }
+    await fragmentWriteQueue;
+    if (part.fragmentCount > 0 && part.sizeBytes > 0) {
+      mediaParts.push({
+        ...part,
+        end: Math.max(part.start + 0.001, endTime),
+      });
+    }
+  }
+
+  function stopRecorderImmediately() {
+    if (mediaRecorder?.state !== "inactive") {
+      try {
+        mediaRecorder.stop();
+      } catch {
+        // Track shutdown may already have stopped the recorder.
+      }
+    }
+    mediaRecorder = null;
+    currentPart = null;
+  }
+
+  function currentActiveSeconds() {
+    if (!sessionStartTime) return 0;
+    const end = pausedAt || Date.now();
+    return Math.max(0, (end - sessionStartTime - totalPausedMs) / 1000);
   }
 
   function abortError() {
@@ -355,16 +583,28 @@ export function useLivePipeline(store) {
       : null;
   }
 
+  /** @param {string} transcriptId */
+  async function finishAudioStaging(transcriptId) {
+    await audioAssets.finishStaging(transcriptId);
+  }
+
+  /** @param {string} transcriptId */
+  async function rollbackAudioStaging(transcriptId) {
+    await audioAssets.rollbackStaging(transcriptId);
+  }
+
   return {
     start,
     pause,
     resume,
     stop,
     cancel,
+    finishAudioStaging,
+    rollbackAudioStaging,
     switchInput,
     retryInput,
-    capturedPcm,
-    discardCapturedPcm,
+    audioManifest,
+    audioPersistenceError,
   };
 }
 

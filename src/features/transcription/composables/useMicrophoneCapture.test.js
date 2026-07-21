@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMicrophoneCapture } from "./useMicrophoneCapture.js";
 
+let workletNodes;
+
 function createTrack() {
   return {
     enabled: true,
@@ -37,8 +39,20 @@ function installAudioMocks() {
   }
   class MockAudioWorkletNode {
     constructor() {
-      this.port = { onmessage: null, postMessage: vi.fn() };
+      this.port = {
+        onmessage: null,
+        postMessage: vi.fn((message) => {
+          if (message.type === "flush" || message.type === "flush-and-stop") {
+            queueMicrotask(() => {
+              this.port.onmessage?.({
+                data: { type: "flushed", requestId: message.requestId },
+              });
+            });
+          }
+        }),
+      };
       this.disconnect = vi.fn();
+      workletNodes.push(this);
     }
   }
   vi.stubGlobal("AudioContext", MockAudioContext);
@@ -52,6 +66,7 @@ function installAudioMocks() {
 
 describe("useMicrophoneCapture", () => {
   beforeEach(() => {
+    workletNodes = [];
     installAudioMocks();
   });
 
@@ -115,11 +130,33 @@ describe("useMicrophoneCapture", () => {
 
     const mic = useMicrophoneCapture(store, vi.fn());
     await mic.start({ deviceId: "built-in" });
-    mic.pause();
+    await mic.pause();
     await mic.switchDevice({ deviceId: "usb" });
 
     expect(originalTrack.stop).toHaveBeenCalled();
     expect(nextTrack.enabled).toBe(false);
     expect(store.isPaused).toBe(true);
+  });
+
+  it("flushes the worklet tail before stopping the capture graph", async () => {
+    const track = createTrack();
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue(createStream(track)),
+      },
+    });
+    /** @type {any} */
+    const store = { isListening: false, isPaused: false, micLevel: 0 };
+    const mic = useMicrophoneCapture(store, vi.fn());
+    await mic.start();
+
+    await mic.flushAndStop();
+
+    expect(workletNodes[0].port.postMessage).toHaveBeenCalledWith({
+      type: "flush-and-stop",
+      requestId: 1,
+    });
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(store.isListening).toBe(false);
   });
 });

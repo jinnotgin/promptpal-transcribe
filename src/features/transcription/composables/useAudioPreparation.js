@@ -1,98 +1,103 @@
-import {
-  canDecodeNatively,
-  isVideoFile,
-  resampleTo16kMono,
-  decodeAudioData,
-} from "@/features/transcription/lib/audioUtils.js";
-
 /**
- * Orchestrates audio preparation: transcode via FFmpeg worker if needed,
- * then decode and resample to 16kHz mono Float32Array.
+ * Orchestrates bounded audio preparation through one reusable FFmpeg worker.
  *
- * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  */
-export function useAudioPreparation(store) {
+export function useAudioPreparation() {
   /** @type {Worker | null} */
   let ffmpegWorker = null;
+  let requestSequence = 0;
+  /** @type {Map<number, { resolve: (value: any) => void, reject: (reason?: unknown) => void }>} */
+  const pendingRequests = new Map();
 
   /**
-   * Prepare a file for ASR: returns 16kHz mono Float32Array.
-   * - Native audio formats → Web Audio API decode (fast path)
-   * - Video / unsupported audio → FFmpeg worker transcode → decode
-   *
+   * Open one reusable, file-backed FFmpeg session. The original File is
+   * structured-cloned to the worker and mounted read-only; it is never turned
+   * into a complete ArrayBuffer on the main thread.
    * @param {File} file
-   * @returns {Promise<Float32Array>}
+   * @param {number | null} [duration]
    */
-  async function prepare(file) {
-    const needsFFmpeg = isVideoFile(file) || !canDecodeNatively(file);
-
-    if (needsFFmpeg) {
-      const wavBuffer = await transcodeWithFFmpeg(file);
-      store.updateProgress("transcoding", 100);
-      const audioBuffer = await decodeAudioData(wavBuffer);
-      return await resampleTo16kMono(audioBuffer);
-    }
-
-    // Fast path: direct decode
-    store.updateProgress("transcoding", 30);
-    const arrayBuffer = await file.arrayBuffer();
-    store.updateProgress("transcoding", 60);
-    const audioBuffer = await decodeAudioData(arrayBuffer);
-    store.updateProgress("transcoding", 80);
-    const pcm = await resampleTo16kMono(audioBuffer);
-    store.updateProgress("transcoding", 100);
-    return pcm;
+  async function open(file, duration = null) {
+    rejectPending(new DOMException("Superseded", "AbortError"));
+    cleanup();
+    ffmpegWorker = createWorker();
+    return await request("open-file", { file, duration });
   }
 
   /**
-   * Transcode a file to WAV via the FFmpeg worker.
-   * @param {File} file
-   * @returns {Promise<ArrayBuffer>} WAV data
+   * @param {{ readStart: number, readEnd: number, index: number, total: number }} window
+   * @returns {Promise<Float32Array>}
    */
-  function transcodeWithFFmpeg(file) {
-    return new Promise(async (resolve, reject) => {
-      ffmpegWorker = new Worker(
-        new URL("@/workers/ffmpegWorker.js", import.meta.url),
-        {
-          type: "module",
-        },
-      );
+  async function prepareWindow(window) {
+    const payload = await request("prepare-window", {
+      start: window.readStart,
+      duration: Math.max(0, window.readEnd - window.readStart),
+      windowIndex: window.index,
+    });
+    return new Float32Array(payload.pcmData);
+  }
 
-      ffmpegWorker.onmessage = (e) => {
-        const { type, payload } = e.data;
-        switch (type) {
-          case "progress":
-            store.updateProgress("transcoding", payload.percent);
-            break;
-          case "complete":
-            cleanup();
-            resolve(payload.wavData);
-            break;
-          case "error":
-            cleanup();
-            reject(new Error(payload.message));
-            break;
-        }
-      };
+  /**
+   * Decode the overlapping ASR window and encode only its committed range as
+   * a finalized WebM/Opus review proxy in the same bounded worker request.
+   * @param {{ readStart: number, readEnd: number, commitStart: number, commitEnd: number, index: number, total: number }} window
+   */
+  async function prepareWindowWithProxy(window) {
+    const payload = await request("prepare-window-with-proxy", {
+      start: window.readStart,
+      duration: Math.max(0, window.readEnd - window.readStart),
+      commitStart: window.commitStart,
+      commitDuration: Math.max(0, window.commitEnd - window.commitStart),
+      windowIndex: window.index,
+    });
+    return {
+      pcm: new Float32Array(payload.pcmData),
+      proxyBlob: new Blob([payload.proxyData], {
+        type: payload.mimeType || "audio/webm;codecs=opus",
+      }),
+    };
+  }
 
-      ffmpegWorker.onerror = (err) => {
-        cleanup();
-        reject(new Error(`FFmpeg worker error: ${err.message}`));
-      };
+  async function close() {
+    if (!ffmpegWorker) return;
+    try {
+      await request("close-file", {});
+    } finally {
+      cleanup();
+    }
+  }
 
-      try {
-        const fileData = await file.arrayBuffer();
-        ffmpegWorker.postMessage(
-          {
-            type: "process",
-            payload: { fileData, fileName: file.name },
-          },
-          [fileData],
-        );
-      } catch (err) {
-        cleanup();
-        reject(err);
-      }
+  function createWorker() {
+    const worker = new Worker(
+      new URL("@/workers/ffmpegWorker.js", import.meta.url),
+      {
+        type: "module",
+      },
+    );
+    worker.onmessage = (event) => {
+      const { type, payload, requestId } = event.data;
+      if (requestId == null) return;
+      const pending = pendingRequests.get(requestId);
+      if (!pending) return;
+      pendingRequests.delete(requestId);
+      if (type === "error")
+        pending.reject(new Error(payload?.message || "FFmpeg failed"));
+      else pending.resolve(payload || {});
+    };
+    worker.onerror = (error) => {
+      const reason = new Error(`FFmpeg worker error: ${error.message}`);
+      rejectPending(reason);
+      cleanup();
+    };
+    return worker;
+  }
+
+  function request(type, payload) {
+    if (!ffmpegWorker)
+      return Promise.reject(new Error("FFmpeg session is not open"));
+    const requestId = ++requestSequence;
+    return new Promise((resolve, reject) => {
+      pendingRequests.set(requestId, { resolve, reject });
+      ffmpegWorker.postMessage({ type, requestId, payload });
     });
   }
 
@@ -103,12 +108,18 @@ export function useAudioPreparation(store) {
     }
   }
 
+  function rejectPending(reason) {
+    for (const pending of pendingRequests.values()) pending.reject(reason);
+    pendingRequests.clear();
+  }
+
   function abort() {
     if (ffmpegWorker) {
       ffmpegWorker.postMessage({ type: "cancel" });
+      rejectPending(new DOMException("Aborted", "AbortError"));
       cleanup();
     }
   }
 
-  return { prepare, abort };
+  return { open, prepareWindow, prepareWindowWithProxy, close, abort };
 }

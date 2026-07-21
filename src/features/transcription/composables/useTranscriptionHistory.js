@@ -50,17 +50,19 @@ export function useTranscriptionHistory() {
    *   fileDuration?: number | null,
    *   isLiveRecording?: boolean,
    *   hasReprocessedLiveRecording?: boolean,
-   *   audioBlob?: Blob | null,
    *   audioMimeType?: string | null,
    *   audioFileName?: string | null,
+   *   audioManifest?: import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null,
    *   segments?: import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[],
    *   speakerNames?: Record<string, string>,
    *   speakerColors?: Record<string, string>,
    *   addedSpeakerIds?: string[],
+   *   waveformSamples?: number[],
    * }} entry
+   * @param {{ finalizeAudio?: boolean }} [options]
    * @returns {Promise<string>}
    */
-  async function saveTranscript(entry) {
+  async function saveTranscript(entry, options = {}) {
     if (!entry.segments?.length) {
       throw new Error("Cannot save a transcript with no segments");
     }
@@ -73,15 +75,29 @@ export function useTranscriptionHistory() {
     const summary = buildSummary({ ...entry, id, createdAt, updatedAt: now });
     const payload = buildPayload({ ...entry, id });
 
-    await db.transaction(
-      "rw",
-      db.transcripts,
-      db.transcriptPayloads,
-      async () => {
-        await db.transcripts.put(summary);
-        await db.transcriptPayloads.put(payload);
-      },
-    );
+    if (options.finalizeAudio && payload.audioManifest) {
+      await db.transaction(
+        "rw",
+        db.transcripts,
+        db.transcriptPayloads,
+        db.transcriptAudioFragments,
+        async () => {
+          await validateManifestAsset(id, payload.audioManifest);
+          await db.transcripts.put(summary);
+          await db.transcriptPayloads.put(payload);
+        },
+      );
+    } else {
+      await db.transaction(
+        "rw",
+        db.transcripts,
+        db.transcriptPayloads,
+        async () => {
+          await db.transcripts.put(summary);
+          await db.transcriptPayloads.put(payload);
+        },
+      );
+    }
 
     return id;
   }
@@ -97,9 +113,14 @@ export function useTranscriptionHistory() {
       "rw",
       db.transcripts,
       db.transcriptPayloads,
+      db.transcriptAudioFragments,
       async () => {
         await db.transcripts.delete(id);
         await db.transcriptPayloads.delete(id);
+        await db.transcriptAudioFragments
+          .where("transcriptId")
+          .equals(id)
+          .delete();
       },
     );
   }
@@ -113,9 +134,11 @@ export function useTranscriptionHistory() {
       "rw",
       db.transcripts,
       db.transcriptPayloads,
+      db.transcriptAudioFragments,
       async () => {
         await db.transcripts.clear();
         await db.transcriptPayloads.clear();
+        await db.transcriptAudioFragments.clear();
       },
     );
   }
@@ -127,4 +150,33 @@ export function useTranscriptionHistory() {
     deleteTranscript,
     deleteAll,
   };
+}
+
+/**
+ * Validate staged v3 rows inside the same transaction that makes their
+ * manifest durable. Blob bytes are not copied; only row order and Blob sizes
+ * are inspected.
+ * @param {string} transcriptId
+ * @param {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} manifest
+ */
+async function validateManifestAsset(transcriptId, manifest) {
+  for (const part of manifest.parts) {
+    const rows = await db.transcriptAudioFragments
+      .where("[transcriptId+partIndex]")
+      .equals([transcriptId, part.index])
+      .sortBy("fragmentIndex");
+    if (rows.length !== part.fragmentCount) {
+      throw new Error(`Audio part ${part.index} is incomplete`);
+    }
+    rows.forEach((row, index) => {
+      if (row.fragmentIndex !== index)
+        throw new Error(`Audio part ${part.index} is out of order`);
+    });
+    const sizeBytes = rows.reduce((total, row) => total + row.blob.size, 0);
+    if (sizeBytes !== part.sizeBytes) {
+      throw new Error(
+        `Audio part ${part.index} byte size does not match its manifest`,
+      );
+    }
+  }
 }
