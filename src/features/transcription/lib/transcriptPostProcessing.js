@@ -19,13 +19,17 @@ export async function constructTranscriptSegments(segments, options = {}) {
 
   await initTranscriptProcessingCore();
   const prepared = prepareWords(words);
+  const skipDiarize = options.skipDiarize ?? true;
   const constructed = constructSentences(
     prepared,
     options.diarizationLabels || [],
-    options.skipDiarize ?? true,
+    skipDiarize,
   );
   const normalized = normalizeConstructedSegments(constructed);
-  return normalized.length ? normalized : segments;
+  const result = normalized.length ? normalized : segments;
+  return skipDiarize
+    ? result.map((segment) => ({ ...segment, speaker: null }))
+    : result;
 }
 
 /**
