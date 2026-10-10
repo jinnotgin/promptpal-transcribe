@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   continuousFinalize: vi.fn(),
   continuousCancel: vi.fn(),
   vadCalls: 0,
+  events: /** @type {string[]} */ ([]),
+  regionCalls: /** @type {any[]} */ ([]),
 }));
 
 vi.mock(
@@ -81,7 +83,8 @@ vi.mock("./useTranscriptionAudioAssets.js", () => ({
 vi.mock("./useVoiceActivityDetection.js", () => ({
   useVoiceActivityDetection: () => ({
     detectWindow: vi.fn(async (pcm) => {
-      if (mocks.vadCalls === 0) expect(mocks.prepared).toEqual([0, 1]);
+      if (mocks.vadCalls === 0)
+        expect(mocks.prepared.slice(-2)).toEqual([0, 1]);
       mocks.vadCalls += 1;
       return { regions: [{ start: 0, end: 1, preChunked: true }], pcm };
     }),
@@ -92,7 +95,20 @@ vi.mock("./useVoiceActivityDetection.js", () => ({
 
 vi.mock("./useAsrInference.js", () => ({
   useAsrInference: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn(async (_runtime, engine) => {
+      mocks.events.push(`asr-init:${engine?.engine ?? "parakeet"}`);
+    }),
+    transcribeRegions: vi.fn(async (_pcm, regions, options) => {
+      mocks.regionCalls.push({ regions, options });
+      return regions.map((region, index) => ({
+        id: `qwen-${options.windowIndex}-${index}`,
+        text: "你好。",
+        start: region.start,
+        end: region.end,
+        speaker: region.speakerId ? `Speaker ${region.speakerId}` : null,
+        words: [],
+      }));
+    }),
     transcribeWindow: vi.fn(async (_pcm, _regions, options) => [
       {
         id: `segment-${options.windowIndex}`,
@@ -112,9 +128,17 @@ vi.mock("./useAsrInference.js", () => ({
 
 vi.mock("./useDiarization.js", () => ({
   useDiarization: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
-    processWindow: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn(async (_runtime, engine) => {
+      mocks.events.push(`diarization-init:${engine?.engine}`);
+    }),
+    processWindow: vi.fn(async () => {
+      mocks.events.push("diarization-window");
+    }),
     finalize: vi.fn(async (segments) => segments),
+    finalizeTurns: vi.fn(async () => {
+      mocks.events.push("diarization-turns");
+      return [{ id: 2, start: 0, end: 620 }];
+    }),
     abort: vi.fn(),
   }),
 }));
@@ -128,7 +152,9 @@ function makeStore() {
     fileSize: 1,
     fileDuration: 620,
     effectiveRuntime: "wasm",
+    language: "en",
     enableDiarization: false,
+    shaderF16: true,
     isCancelled: false,
     segments: [],
     waveformSamples: [],
@@ -145,6 +171,8 @@ describe("useTranscriptionPipeline uploaded media", () => {
     mocks.prepared = [];
     mocks.readStarts = [];
     mocks.vadCalls = 0;
+    mocks.events = [];
+    mocks.regionCalls = [];
     mocks.continuousSupported = true;
     vi.clearAllMocks();
     mocks.assertStorageHeadroom.mockResolvedValue(undefined);
@@ -194,6 +222,44 @@ describe("useTranscriptionPipeline uploaded media", () => {
 
     expect(mocks.readStarts).toEqual([0, 297, 597, 0, 300, 600]);
     expect(store.processPhase).toBe("complete");
+  });
+
+  it("diarizes Chinese first, then transcribes speaker-labelled Qwen regions", async () => {
+    const store = makeStore();
+    store.language = "zh";
+    store.effectiveRuntime = "webgpu";
+    store.enableDiarization = true;
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.events).toEqual([
+      "diarization-init:nemotron",
+      "diarization-window",
+      "diarization-window",
+      "diarization-window",
+      "diarization-turns",
+      "asr-init:qwen3-asr",
+    ]);
+    // Each mocked window is 1 s of PCM, so only window 0 has committed speech.
+    expect(mocks.regionCalls).toHaveLength(1);
+    expect(mocks.regionCalls[0].regions).toEqual([
+      { start: 0, end: 1, speakerId: 2 },
+    ]);
+    expect(store.segments).toEqual([
+      expect.objectContaining({ text: "你好。", speaker: "Speaker 2" }),
+    ]);
+    expect(store.processPhase).toBe("complete");
+  });
+
+  it("refuses Chinese transcription without WebGPU", async () => {
+    const store = makeStore();
+    store.language = "zh";
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(store.processPhase).toBe("error");
+    expect(store.error.code).toBe("ENGINE_UNAVAILABLE");
+    expect(mocks.events).toEqual([]);
   });
 
   it("persists one continuous WebM/Opus asset from committed upload ranges when supported", async () => {

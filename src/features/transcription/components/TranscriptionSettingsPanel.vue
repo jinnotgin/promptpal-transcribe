@@ -17,8 +17,17 @@ import {
 } from "@/components/ui/popover";
 import TranscriptionModelStatus from "./TranscriptionModelStatus.vue";
 
+/** @typedef {import('@/features/transcription/lib/engineSelection').EngineSelection} EngineSelection */
+
 const props = defineProps({
   executionEnv: { type: String, required: true },
+  speakerModel: { type: String, default: "nemotron" },
+  selection: {
+    type: /** @type {import('vue').PropType<EngineSelection | null>} */ (
+      Object
+    ),
+    default: null,
+  },
   effectiveRuntime: { type: String, required: true },
   isProcessing: { type: Boolean, default: false },
   parakeetCached: { type: Boolean, default: false },
@@ -28,7 +37,11 @@ const props = defineProps({
   sortformerLoadProgress: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(["update:executionEnv", "clearCache"]);
+const emit = defineEmits([
+  "update:executionEnv",
+  "update:speakerModel",
+  "clearCache",
+]);
 
 const runtimeDisplay = computed(() => {
   if (props.executionEnv === "auto") {
@@ -53,6 +66,7 @@ const runtimeDisplay = computed(() => {
         <div class="space-y-2">
           <Label class="text-xs">Models</Label>
           <TranscriptionModelStatus
+            :selection="selection"
             :parakeet-cached="parakeetCached"
             :sortformer-cached="sortformerCached"
             :parakeet-load-progress="parakeetLoadProgress"
@@ -80,6 +94,31 @@ const runtimeDisplay = computed(() => {
           </Select>
           <p class="text-xs text-muted-foreground">
             Active: {{ runtimeDisplay }}
+          </p>
+        </div>
+
+        <!-- Speaker model -->
+        <div class="space-y-2">
+          <Label class="text-xs">Speaker Model</Label>
+          <Select
+            :model-value="speakerModel"
+            :disabled="isProcessing"
+            @update:model-value="emit('update:speakerModel', $event)"
+          >
+            <SelectTrigger class="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="nemotron">
+                Nemotron 3 (up to 8 speakers)
+              </SelectItem>
+              <SelectItem value="sortformer">
+                Sortformer v2.1 (legacy, up to 4)
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground">
+            Chinese transcripts always use Nemotron 3.
           </p>
         </div>
 

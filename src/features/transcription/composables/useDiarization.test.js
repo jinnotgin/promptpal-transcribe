@@ -5,7 +5,8 @@ class FakeDiarizationWorker {
   static instances = [];
   static autoRespond = true;
 
-  constructor() {
+  constructor(url) {
+    this.url = String(url);
     this.onmessage = null;
     this.onerror = null;
     this.onmessageerror = null;
@@ -23,7 +24,13 @@ class FakeDiarizationWorker {
       if (message.type === "process-window")
         this.reply(message, "window-complete", {});
       if (message.type === "finalize") {
-        this.reply(message, "complete", { segments: message.payload.segments });
+        this.reply(
+          message,
+          "complete",
+          message.payload.mode === "turns"
+            ? { turns: [{ id: 1, start: 0, end: 2 }] }
+            : { segments: message.payload.segments },
+        );
       }
     });
   }
@@ -107,5 +114,50 @@ describe("useDiarization window sessions", () => {
     ).resolves.toBeUndefined();
     expect(FakeDiarizationWorker.instances).toHaveLength(2);
     diarization.abort();
+  });
+
+  it("runs the Nemotron worker by default and the legacy worker on request", async () => {
+    const store = /** @type {any} */ ({
+      updateProgress: vi.fn(),
+      sortformerLoadProgress: 0,
+    });
+    const diarization = useDiarization(store);
+    await diarization.initialize("wasm");
+    await diarization.initialize("wasm", {
+      engine: "sortformer",
+      variant: "fp32",
+      maxSpeakers: 4,
+    });
+
+    expect(FakeDiarizationWorker.instances[0].url).toContain(
+      "nemotronDiarizationWorker",
+    );
+    expect(FakeDiarizationWorker.instances[1].url).toContain(
+      "/diarizationWorker",
+    );
+  });
+
+  it("returns speaker turns for diarize-first transcription", async () => {
+    const diarization = useDiarization(
+      /** @type {any} */ ({
+        updateProgress: vi.fn(),
+        sortformerLoadProgress: 0,
+      }),
+    );
+    await diarization.initialize("wasm");
+    await diarization.processWindow(new Float32Array([0, 1]), {
+      windowIndex: 0,
+      totalWindows: 1,
+    });
+
+    await expect(diarization.finalizeTurns()).resolves.toEqual([
+      { id: 1, start: 0, end: 2 },
+    ]);
+    const worker = FakeDiarizationWorker.instances[0];
+    expect(worker.messages.at(-1)).toMatchObject({
+      type: "finalize",
+      payload: { mode: "turns" },
+    });
+    expect(worker.terminated).toBe(true);
   });
 });

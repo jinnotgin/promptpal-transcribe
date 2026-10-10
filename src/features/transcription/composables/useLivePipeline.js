@@ -3,10 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useModelManager } from "./useModelManager.js";
 import { useAsrInference } from "./useAsrInference.js";
 import { useMicrophoneCapture } from "./useMicrophoneCapture.js";
-import {
-  rebuildSegmentsFromWords,
-  mergeAdjacentSegments,
-} from "@/features/transcription/lib/timestampStitching.js";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
 import { SYSTEM_DEFAULT_MIC_ID } from "@/features/transcription/composables/useMicrophoneDevices.js";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
@@ -90,9 +87,18 @@ export function useLivePipeline(store) {
       recorderProfile = recordingTranscriptId
         ? selectLiveRecordingProfile()
         : null;
+      const selection = selectTranscriptionEngines({
+        language: store.language ?? "en",
+        speakerMode: "solo",
+        runtime,
+        shaderF16: Boolean(store.shaderF16),
+      });
+      if (!selection.available) {
+        throw new Error(`ENGINE_UNAVAILABLE: ${selection.unavailableReason}`);
+      }
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
-      await asr.initialize(runtime);
+      await modelManager.checkCache(selection.assetKeys);
+      await asr.initialize(runtime, selection.asr);
 
       if (store.isCancelled) throw abortError();
 
@@ -347,10 +353,7 @@ export function useLivePipeline(store) {
       const rawSegments = await asr.processChunk(audio, uttStart, 0, 1);
       if (!rawSegments.length) return;
 
-      const merged = mergeAdjacentSegments(
-        rebuildSegmentsFromWords(rawSegments),
-        1.25,
-      );
+      const merged = asr.mergeSegments(rawSegments);
 
       const withIds = merged.map((seg) => ({
         ...seg,
@@ -611,6 +614,13 @@ export function useLivePipeline(store) {
 function classifyLiveError(err) {
   const msg = err.message || String(err);
 
+  if (msg.startsWith("ENGINE_UNAVAILABLE")) {
+    return {
+      code: "ENGINE_UNAVAILABLE",
+      message: msg.replace(/^ENGINE_UNAVAILABLE:\s*/, ""),
+      recoverable: true,
+    };
+  }
   if (msg.includes("MIC_PERMISSION_DENIED")) {
     return {
       code: "MIC_PERMISSION_DENIED",

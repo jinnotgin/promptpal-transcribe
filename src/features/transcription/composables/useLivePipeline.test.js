@@ -7,11 +7,16 @@ vi.mock("./useModelManager.js", () => ({
   useModelManager: () => ({ checkCache: vi.fn().mockResolvedValue(undefined) }),
 }));
 
+const asrMock = vi.hoisted(() => ({
+  initialize: vi.fn(async () => {}),
+}));
+
 vi.mock("./useAsrInference.js", () => ({
   useAsrInference: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: asrMock.initialize,
     cleanup: vi.fn(),
     processChunk: vi.fn().mockResolvedValue([]),
+    mergeSegments: vi.fn((segments) => segments),
   }),
 }));
 
@@ -242,5 +247,22 @@ describe("useLivePipeline microphone switching", () => {
 
     expect(store.micInputState).toBe("interrupted");
     expect(store.micInputError).toMatchObject({ code: "MIC_SWITCH_FAILED" });
+  });
+
+  it("loads Qwen3-ASR for live Chinese transcription on WebGPU", async () => {
+    const store = createStore();
+    store.language = "zh";
+    store.effectiveRuntime = "webgpu";
+    store.shaderF16 = true;
+    mockMic.start.mockImplementation(async () => {
+      store.isListening = true;
+    });
+
+    await useLivePipeline(store).start();
+
+    expect(asrMock.initialize).toHaveBeenCalledWith("webgpu", {
+      engine: "qwen3-asr",
+      variant: "q4f16",
+    });
   });
 });

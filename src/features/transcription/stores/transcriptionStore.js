@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import {
   SYSTEM_DEFAULT_MIC_ID,
   createSystemDefaultMic,
@@ -8,19 +9,30 @@ import {
  * @typedef {'auto' | 'webgpu' | 'wasm'} ExecutionEnv
  * @typedef {'idle' | 'checking-cache' | 'downloading-model' | 'loading-model' | 'downloading-diarization-model' | 'loading-diarization-model' | 'transcoding' | 'vad' | 'transcribing' | 'diarizing' | 'complete' | 'error'} ProcessPhase
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment} TranscriptSegment
+ * @typedef {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} TranscriptionLanguage
+ * @typedef {import('@/features/transcription/lib/engineSelection').SpeakerModel} SpeakerModel
  */
 
 const STORAGE_KEY_ENV = "transcription-env";
+const STORAGE_KEY_LANGUAGE = "transcription-language";
+const STORAGE_KEY_SPEAKER_MODEL = "transcription-speaker-model";
 
 export const useTranscriptionStore = defineStore("transcription", {
   state: () => ({
     // --- Settings (persisted to localStorage) ---
     /** @type {ExecutionEnv} */
     executionEnv: parseExecutionEnv(localStorage.getItem(STORAGE_KEY_ENV)),
+    /** @type {TranscriptionLanguage} */
+    language: parseLanguage(localStorage.getItem(STORAGE_KEY_LANGUAGE)),
+    /** @type {SpeakerModel} */
+    speakerModel: parseSpeakerModel(
+      localStorage.getItem(STORAGE_KEY_SPEAKER_MODEL),
+    ),
     enableDiarization: true,
 
     // --- Runtime detection ---
     webgpuAvailable: false,
+    shaderF16: false,
     /** @type {'webgpu' | 'wasm' | null} */
     detectedRuntime: null,
     /** @type {'fp16' | 'int8' | null} */
@@ -103,6 +115,17 @@ export const useTranscriptionStore = defineStore("transcription", {
       }
       if (state.executionEnv === "wasm") return "wasm";
       return state.webgpuAvailable ? "webgpu" : "wasm";
+    },
+
+    /** @returns {import('@/features/transcription/lib/engineSelection').EngineSelection} */
+    engineSelection() {
+      return selectTranscriptionEngines({
+        language: this.language,
+        speakerMode: this.enableDiarization ? "group" : "solo",
+        runtime: this.effectiveRuntime,
+        shaderF16: this.shaderF16,
+        speakerModel: this.speakerModel,
+      });
     },
 
     /** @returns {TranscriptSegment[]} */
@@ -201,6 +224,7 @@ export const useTranscriptionStore = defineStore("transcription", {
      */
     setHardwareCapability(capability) {
       this.webgpuAvailable = capability.backend === "webgpu";
+      this.shaderF16 = Boolean(capability.shaderF16);
       this.detectedRuntime = capability.backend;
       this.detectedModelVersion = capability.version;
       this.runtimeReason = capability.reason;
@@ -275,6 +299,18 @@ export const useTranscriptionStore = defineStore("transcription", {
     setExecutionEnv(env) {
       this.executionEnv = env;
       localStorage.setItem(STORAGE_KEY_ENV, env);
+    },
+
+    /** @param {TranscriptionLanguage} language */
+    setLanguage(language) {
+      this.language = parseLanguage(language);
+      localStorage.setItem(STORAGE_KEY_LANGUAGE, this.language);
+    },
+
+    /** @param {SpeakerModel} model */
+    setSpeakerModel(model) {
+      this.speakerModel = parseSpeakerModel(model);
+      localStorage.setItem(STORAGE_KEY_SPEAKER_MODEL, this.speakerModel);
     },
 
     /** @param {boolean} enabled */
@@ -359,6 +395,22 @@ export const useTranscriptionStore = defineStore("transcription", {
 /**
  * @typedef {ReturnType<typeof useTranscriptionStore>} TranscriptionStore
  */
+
+/**
+ * @param {string | null} value
+ * @returns {TranscriptionLanguage}
+ */
+function parseLanguage(value) {
+  return value === "zh" ? "zh" : "en";
+}
+
+/**
+ * @param {string | null} value
+ * @returns {SpeakerModel}
+ */
+function parseSpeakerModel(value) {
+  return value === "sortformer" ? "sortformer" : "nemotron";
+}
 
 /**
  * @param {string | null} value

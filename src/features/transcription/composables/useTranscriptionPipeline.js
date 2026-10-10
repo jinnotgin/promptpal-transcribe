@@ -9,6 +9,8 @@ import {
   getCommittedPcmView,
 } from "@/features/transcription/lib/audioWindowing.js";
 import { createWaveformAccumulator } from "@/features/transcription/lib/waveformAccumulator.js";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import { planQwenRegions } from "@/features/transcription/lib/qwenAsrRegions.js";
 import { ref } from "vue";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
@@ -26,7 +28,10 @@ const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
  *   3. Run VAD to find speech regions
  *   4. Run ASR inference on each chunk
  *
- * Diarization runs as a lightweight local speaker-assignment pass.
+ * Diarization normally runs after ASR and assigns speakers to timestamped
+ * words. Qwen3-ASR has no word timestamps, so for Chinese with speaker
+ * identification the diarization pass runs first and ASR transcribes regions
+ * cut at speaker turns.
  *
  * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  */
@@ -84,6 +89,89 @@ export function useTranscriptionPipeline(store) {
     return activePreparation;
   }
 
+  /**
+   * Engines for this run; reprocessing may override speaker identification.
+   * @param {boolean} enableDiarization
+   */
+  function selectEngines(enableDiarization) {
+    return selectTranscriptionEngines({
+      language: store.language ?? "en",
+      speakerMode: enableDiarization ? "group" : "solo",
+      runtime: store.effectiveRuntime,
+      shaderF16: Boolean(store.shaderF16),
+      speakerModel: store.speakerModel ?? "nemotron",
+    });
+  }
+
+  /**
+   * Run the diarizer over committed ranges. Unlike ASR it carries sequential
+   * speaker state, so it never repeats boundary overlap.
+   * @param {Array<{ windows: ReturnType<typeof createAudioWindows>, open?: () => Promise<void>, close?: () => Promise<void> }>} sources
+   * @param {number} totalWindows
+   */
+  async function diarizeCommittedWindows(sources, totalWindows) {
+    let diarizationIndex = 0;
+    for (const source of sources) {
+      await source.open?.();
+      try {
+        const { windows } = source;
+        let preparation = prepareCommittedWindow(windows[0]);
+        for (let index = 0; index < windows.length; index += 1) {
+          const pcm = /** @type {Float32Array} */ (
+            await consumePreparation(preparation)
+          );
+          preparation = windows[index + 1]
+            ? prepareCommittedWindow(windows[index + 1])
+            : null;
+          if (store.isCancelled) throw abort();
+          const startedAt = monotonicNow();
+          await diarization.processWindow(pcm, {
+            windowIndex: diarizationIndex,
+            totalWindows,
+          });
+          logWindowDiagnostics("diarization", windows[index], startedAt, {
+            pcmBytes: pcm.byteLength,
+          });
+          diarizationIndex += 1;
+        }
+      } finally {
+        await source.close?.();
+      }
+    }
+  }
+
+  /**
+   * Transcribe one window with Qwen3-ASR over planned regions.
+   * @param {Float32Array} pcm
+   * @param {Array<{ start: number, end: number }>} regions
+   * @param {{ readStart: number, commitStart: number, commitEnd: number }} window
+   * @param {number} baseOffset absolute start of the source (manifest part)
+   * @param {Array<{ id: number, start: number, end: number }> | null} turns
+   * @param {{ windowIndex: number, totalWindows: number }} progress
+   */
+  async function transcribeQwenWindow(
+    pcm,
+    regions,
+    window,
+    baseOffset,
+    turns,
+    progress,
+  ) {
+    const planned = planQwenRegions({
+      pcm,
+      regions,
+      offset: baseOffset + window.readStart,
+      commitStart: baseOffset + window.commitStart,
+      commitEnd: baseOffset + window.commitEnd,
+      turns,
+    });
+    if (!planned.length) return [];
+    return await asr.transcribeRegions(pcm, planned, {
+      offset: baseOffset + window.readStart,
+      ...progress,
+    });
+  }
+
   async function consumePreparation(preparation) {
     try {
       return await preparation;
@@ -115,10 +203,14 @@ export function useTranscriptionPipeline(store) {
     store.error = null;
 
     const runtime = store.effectiveRuntime;
+    const selection = selectEngines(store.enableDiarization);
+    const usesQwen = selection.asr.engine === "qwen3-asr";
 
     trackAnalyticsEvent("transcription_started", {
       runtime,
-      diarizationEnabled: store.enableDiarization,
+      asrEngine: selection.asr.engine,
+      diarizationEngine: selection.diarization?.engine ?? null,
+      diarizationEnabled: Boolean(selection.diarization),
       fileSizeMb: Math.round((store.fileSize / (1024 * 1024)) * 10) / 10,
       estimatedDurationSec: store.fileDuration
         ? Math.round(store.fileDuration)
@@ -127,20 +219,27 @@ export function useTranscriptionPipeline(store) {
 
     let audioSessionOpen = false;
     try {
+      if (!selection.available) {
+        throw new Error(`ENGINE_UNAVAILABLE: ${selection.unavailableReason}`);
+      }
       if (transcriptId) await audioAssets.beginStaging(transcriptId);
       // 1. Prepare the ASR model and file-backed FFmpeg session together so
       // sustainable preparation does not add serial startup latency.
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
+      await modelManager.checkCache(selection.assetKeys);
       const audioSessionPromise = audioPrep
         .open(store.file, store.fileDuration)
         .then((session) => {
           audioSessionOpen = true;
           return session;
         });
+      // Diarize-first runs load the diarizer before ASR so the two large
+      // models are never resident together.
       const [audioSession] = await Promise.all([
         audioSessionPromise,
-        asr.initialize(runtime),
+        selection.diarizeFirst
+          ? Promise.resolve()
+          : asr.initialize(runtime, selection.asr),
       ]);
       const duration = audioSession.duration;
       store.fileDuration = duration;
@@ -167,11 +266,23 @@ export function useTranscriptionPipeline(store) {
 
       // Pre-download the diarization model alongside ASR models so the
       // diarization worker finds it cached and doesn't stall at stage 5.
-      if (store.enableDiarization) {
-        await modelManager.ensureDiarizationModel();
+      if (selection.diarization) {
+        await modelManager.ensureDiarizationModel(selection.assetKeys);
       }
 
       if (store.isCancelled) throw abort();
+
+      /** @type {Array<{ id: number, start: number, end: number }> | null} */
+      let speakerTurns = null;
+      if (selection.diarizeFirst && selection.diarization) {
+        store.processPhase = "diarizing";
+        await diarization.initialize(runtime, selection.diarization);
+        await diarizeCommittedWindows([{ windows }], windows.length);
+        speakerTurns = await diarization.finalizeTurns();
+        if (store.isCancelled) throw abort();
+        store.processPhase = "loading-model";
+        await asr.initialize(runtime, selection.asr);
+      }
 
       // 2. Prepare, detect, and transcribe bounded windows. Start N+1 only
       // after receiving N, then consume N while the one look-ahead decodes.
@@ -271,11 +382,20 @@ export function useTranscriptionPipeline(store) {
 
         store.processPhase = "transcribing";
         const asrStartedAt = monotonicNow();
-        const windowRows = await asr.transcribeWindow(pcm, detected.regions, {
-          offset: window.readStart,
-          windowIndex: window.index,
-          totalWindows: window.total,
-        });
+        const windowRows = usesQwen
+          ? await transcribeQwenWindow(
+              pcm,
+              detected.regions,
+              window,
+              0,
+              speakerTurns,
+              { windowIndex: window.index, totalWindows: window.total },
+            )
+          : await asr.transcribeWindow(pcm, detected.regions, {
+              offset: window.readStart,
+              windowIndex: window.index,
+              totalWindows: window.total,
+            });
         logWindowDiagnostics("asr", window, asrStartedAt, {
           segmentCount: windowRows.length,
         });
@@ -307,34 +427,12 @@ export function useTranscriptionPipeline(store) {
       }
       asr.cleanup();
 
-      if (store.enableDiarization) {
+      if (selection.diarization && !selection.diarizeFirst) {
         if (store.isCancelled) throw abort();
 
         store.processPhase = "diarizing";
-        await diarization.initialize(runtime);
-        // Diarization carries sequential speaker state, so unlike ASR it
-        // consumes only committed ranges and never repeats boundary overlap.
-        let diarizationPreparation = prepareCommittedWindow(windows[0]);
-        for (let index = 0; index < windows.length; index += 1) {
-          const pcm = await consumePreparation(diarizationPreparation);
-          diarizationPreparation = windows[index + 1]
-            ? prepareCommittedWindow(windows[index + 1])
-            : null;
-          if (store.isCancelled) throw abort();
-          const diarizationStartedAt = monotonicNow();
-          await diarization.processWindow(pcm, {
-            windowIndex: index,
-            totalWindows: windows.length,
-          });
-          logWindowDiagnostics(
-            "diarization",
-            windows[index],
-            diarizationStartedAt,
-            {
-              pcmBytes: pcm.byteLength,
-            },
-          );
-        }
+        await diarization.initialize(runtime, selection.diarization);
+        await diarizeCommittedWindows([{ windows }], windows.length);
         transcriptRows = await diarization.finalize(transcriptRows);
       } else {
         transcriptRows = await asr.finalizeSegments(transcriptRows, {
@@ -357,7 +455,8 @@ export function useTranscriptionPipeline(store) {
 
       trackAnalyticsEvent("transcription_completed", {
         runtime,
-        diarizationEnabled: store.enableDiarization,
+        asrEngine: selection.asr.engine,
+        diarizationEnabled: Boolean(selection.diarization),
         durationMs: Date.now() - startTime,
         segmentCount: transcriptRows.length,
       });
@@ -441,6 +540,8 @@ export function useTranscriptionPipeline(store) {
     const manifest = normalizeTranscriptAudioManifest(manifestValue);
     const enableDiarization = options.enableDiarization ?? true;
     const runtime = store.effectiveRuntime;
+    const selection = selectEngines(enableDiarization);
+    const usesQwen = selection.asr.engine === "qwen3-asr";
     const startTime = Date.now();
     store.clearProcessingState();
     store.segments = [];
@@ -450,10 +551,15 @@ export function useTranscriptionPipeline(store) {
     store.fileDuration = manifest.duration;
 
     try {
+      if (!selection.available) {
+        throw new Error(`ENGINE_UNAVAILABLE: ${selection.unavailableReason}`);
+      }
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
-      await asr.initialize(runtime);
-      if (enableDiarization) await modelManager.ensureDiarizationModel();
+      await modelManager.checkCache(selection.assetKeys);
+      if (!selection.diarizeFirst) await asr.initialize(runtime, selection.asr);
+      if (selection.diarization) {
+        await modelManager.ensureDiarizationModel(selection.assetKeys);
+      }
       if (store.isCancelled) throw abort();
 
       let transcriptRows = [];
@@ -463,6 +569,28 @@ export function useTranscriptionPipeline(store) {
           total + createAudioWindows(part.end - part.start).length,
         0,
       );
+      const diarizationSources = manifest.parts.map((part) => ({
+        windows: createAudioWindows(part.end - part.start),
+        open: async () => {
+          const blob = await audioAssets.getPartBlob(transcriptId, part);
+          const file = new File([blob], `transcript-part-${part.index}`, {
+            type: part.mimeType,
+          });
+          await audioPrep.open(file, part.end - part.start);
+        },
+        close: () => audioPrep.close(),
+      }));
+
+      /** @type {Array<{ id: number, start: number, end: number }> | null} */
+      let speakerTurns = null;
+      if (selection.diarizeFirst && selection.diarization) {
+        store.processPhase = "diarizing";
+        await diarization.initialize(runtime, selection.diarization);
+        await diarizeCommittedWindows(diarizationSources, totalWindows);
+        speakerTurns = await diarization.finalizeTurns();
+        store.processPhase = "loading-model";
+        await asr.initialize(runtime, selection.asr);
+      }
 
       for (const part of manifest.parts) {
         const blob = await audioAssets.getPartBlob(transcriptId, part);
@@ -484,11 +612,20 @@ export function useTranscriptionPipeline(store) {
             const detected = await vad.detectWindow(pcm);
             pcm = detected.pcm;
             if (detected.regions.length) {
-              const rows = await asr.transcribeWindow(pcm, detected.regions, {
-                offset: part.start + window.readStart,
-                windowIndex: globalWindowIndex,
-                totalWindows,
-              });
+              const rows = usesQwen
+                ? await transcribeQwenWindow(
+                    pcm,
+                    detected.regions,
+                    window,
+                    part.start,
+                    speakerTurns,
+                    { windowIndex: globalWindowIndex, totalWindows },
+                  )
+                : await asr.transcribeWindow(pcm, detected.regions, {
+                    offset: part.start + window.readStart,
+                    windowIndex: globalWindowIndex,
+                    totalWindows,
+                  });
               transcriptRows = asr.mergeSegments([...transcriptRows, ...rows]);
               store.setSegments(transcriptRows);
             }
@@ -502,36 +639,10 @@ export function useTranscriptionPipeline(store) {
       if (!transcriptRows.length) throw new Error("ASR_EMPTY_RESULT");
       asr.cleanup();
 
-      if (enableDiarization) {
+      if (selection.diarization && !selection.diarizeFirst) {
         store.processPhase = "diarizing";
-        await diarization.initialize(runtime);
-        let diarizationIndex = 0;
-        for (const part of manifest.parts) {
-          const blob = await audioAssets.getPartBlob(transcriptId, part);
-          const file = new File([blob], `transcript-part-${part.index}`, {
-            type: part.mimeType,
-          });
-          await audioPrep.open(file, part.end - part.start);
-          try {
-            const windows = createAudioWindows(part.end - part.start);
-            let preparation = prepareCommittedWindow(windows[0]);
-            for (let index = 0; index < windows.length; index += 1) {
-              const pcm = /** @type {Float32Array} */ (
-                await consumePreparation(preparation)
-              );
-              preparation = windows[index + 1]
-                ? prepareCommittedWindow(windows[index + 1])
-                : null;
-              await diarization.processWindow(pcm, {
-                windowIndex: diarizationIndex,
-                totalWindows,
-              });
-              diarizationIndex += 1;
-            }
-          } finally {
-            await audioPrep.close();
-          }
-        }
+        await diarization.initialize(runtime, selection.diarization);
+        await diarizeCommittedWindows(diarizationSources, totalWindows);
         transcriptRows = await diarization.finalize(transcriptRows);
       } else {
         transcriptRows = await asr.finalizeSegments(transcriptRows, {
@@ -594,6 +705,13 @@ function logWindowDiagnostics(phase, window, startedAt, metrics = {}) {
 function classifyError(err) {
   const msg = err.message || String(err);
 
+  if (msg.startsWith("ENGINE_UNAVAILABLE")) {
+    return {
+      code: "ENGINE_UNAVAILABLE",
+      message: msg.replace(/^ENGINE_UNAVAILABLE:\s*/, ""),
+      recoverable: true,
+    };
+  }
   if (msg.includes("FFMPEG") || msg.includes("FFmpeg")) {
     return {
       code: "TRANSCODE_FAILED",

@@ -247,7 +247,7 @@ async function loadSortformer(runtime, signal) {
 
 function configureOrt() {
   const env = /** @type {any} */ (ort).env;
-  const version = env?.versions?.common || "1.24.3";
+  const version = env?.versions?.common || "1.30.0";
   if (env?.wasm && !env.wasm.wasmPaths) {
     env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${version}/dist/`;
   }

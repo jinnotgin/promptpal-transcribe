@@ -2,7 +2,7 @@
  * @typedef {'webgpu' | 'wasm'} RuntimeBackend
  * @typedef {'fp16' | 'int8'} ModelVersion
  * @typedef {'none' | 'browser' | 'memory' | 'hardware'} RuntimeAdvisory
- * @typedef {{ supported: boolean, backend: RuntimeBackend, version: ModelVersion, webgpuAvailable: boolean, reason: string, advisory: RuntimeAdvisory }} HardwareCapability
+ * @typedef {{ supported: boolean, backend: RuntimeBackend, version: ModelVersion, webgpuAvailable: boolean, shaderF16: boolean, reason: string, advisory: RuntimeAdvisory }} HardwareCapability
  */
 
 const GB = 0x40000000;
@@ -87,7 +87,8 @@ export async function checkHardwareCapabilities() {
       );
     }
 
-    const f16Note = adapter.features?.has("shader-f16")
+    const shaderF16 = Boolean(adapter.features?.has("shader-f16"));
+    const f16Note = shaderF16
       ? ""
       : " Native shader-f16 is unavailable, so performance may be lower.";
 
@@ -96,6 +97,7 @@ export async function checkHardwareCapabilities() {
       backend: "webgpu",
       version: "fp16",
       webgpuAvailable: true,
+      shaderF16,
       reason:
         `WebGPU fp16 is available with adequate buffer limits.${f16Note}`.trim(),
       advisory: "none",
@@ -121,6 +123,7 @@ function wasmFallback(reason, webgpuAvailable, advisory) {
     backend: "wasm",
     version: "int8",
     webgpuAvailable,
+    shaderF16: false,
     reason: `${reason} Falling back to WASM/int8.`,
     advisory,
   };

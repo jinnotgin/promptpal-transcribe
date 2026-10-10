@@ -42,7 +42,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,6 +71,8 @@ import { createTranscriptAudioSeekCoordinator } from "@/features/transcription/l
 import TranscriptionDropZone from "@/features/transcription/components/TranscriptionDropZone.vue";
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
+import TranscriptionEngineOptions from "@/features/transcription/components/TranscriptionEngineOptions.vue";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import TranscriptionProgressPanel from "@/features/transcription/components/TranscriptionProgressPanel.vue";
 import BrowserAdvisoryBanner from "@/features/transcription/components/BrowserAdvisoryBanner.vue";
 import LiveMicrophonePanel from "@/features/transcription/components/LiveMicrophonePanel.vue";
@@ -183,7 +184,8 @@ const preflightWarning = computed(() => {
   return null;
 });
 
-const blocksTranscription = false;
+const blocksTranscription = computed(() => !store.engineSelection.available);
+const chineseAvailable = computed(() => store.effectiveRuntime === "webgpu");
 const shouldShowBrowserAdvisory = computed(() => !isChromeBrowser());
 const hasMemoryAdvisory = computed(() => store.runtimeAdvisory === "memory");
 const advisoryVariant = computed(() => {
@@ -374,16 +376,27 @@ onMounted(async () => {
     page_location: "transcribe_page",
   });
   await refreshHistorySummaries();
-  await modelManager.checkCache();
+  await modelManager.checkCache(store.engineSelection.assetKeys);
 
   // After cache state is known, start background model pre-download once
   // runtime detection resolves so the worker starts from cache on first use.
-  function startPrefetch() {
-    if (store.parakeetCached) return;
-    const promise = modelManager.ensureModelsReady(
-      store.effectiveRuntime,
-      true,
-    );
+  // Switching language re-runs it for the newly selected engines.
+  async function startPrefetch() {
+    const selection = store.engineSelection;
+    if (!selection.available || prefetchPromise.value) return;
+    // Prefetch the group diarizer too, since speakers default to on.
+    const assetKeys = selection.diarization
+      ? selection.assetKeys
+      : selectTranscriptionEngines({
+          language: store.language,
+          speakerMode: "group",
+          runtime: store.effectiveRuntime,
+          shaderF16: store.shaderF16,
+          speakerModel: store.speakerModel,
+        }).assetKeys;
+    await modelManager.checkCache(assetKeys);
+    if (store.parakeetCached && store.sortformerCached) return;
+    const promise = modelManager.ensureModelsReady(assetKeys);
     prefetchPromise.value = promise;
     promise.then(
       () => {
@@ -394,6 +407,19 @@ onMounted(async () => {
       },
     );
   }
+  watch(
+    () => store.language,
+    async () => {
+      if (!store.detectedRuntime || store.isProcessing) return;
+      // Replace a prefetch for the previous language's models.
+      const pending = prefetchPromise.value;
+      if (pending) {
+        modelManager.abort();
+        await pending.catch(() => {});
+      }
+      void startPrefetch();
+    },
+  );
   if (store.detectedRuntime) {
     // Runtime already known (e.g. returning to page — Pinia store persists).
     startPrefetch();
@@ -2079,6 +2105,8 @@ onUnmounted(() => {
       <div v-if="!store.isProcessing" class="absolute right-5 top-5 z-20">
         <TranscriptionSettingsPanel
           :execution-env="store.executionEnv"
+          :speaker-model="store.speakerModel"
+          :selection="store.engineSelection"
           :effective-runtime="store.effectiveRuntime"
           :is-processing="store.isProcessing"
           :parakeet-cached="store.parakeetCached"
@@ -2087,6 +2115,7 @@ onUnmounted(() => {
           :parakeet-indeterminate="store.parakeetLoadIndeterminate"
           :sortformer-load-progress="store.sortformerLoadProgress"
           @update:execution-env="store.setExecutionEnv($event)"
+          @update:speaker-model="store.setSpeakerModel($event)"
           @clear-cache="handleClearCache"
         />
       </div>
@@ -2133,12 +2162,12 @@ onUnmounted(() => {
                 <span
                   class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
                 >
-                  English only
+                  English and Chinese
                 </span>
                 <span
                   class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
                 >
-                  Detects up to 4 speakers
+                  Detects up to 8 speakers
                 </span>
               </div>
             </div>
@@ -2166,20 +2195,18 @@ onUnmounted(() => {
                 >
                   {{ preflightWarning }}
                 </div>
-                <div
-                  class="mt-8 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-3"
-                >
-                  <div>
-                    <p class="text-sm font-medium">Speaker identification</p>
-                    <p class="text-xs text-muted-foreground">
-                      Identify and label speakers when possible.
-                    </p>
-                  </div>
-                  <Switch
-                    :model-value="store.enableDiarization"
-                    @update:model-value="store.setEnableDiarization($event)"
-                  />
-                </div>
+                <TranscriptionEngineOptions
+                  class="mt-8"
+                  :language="store.language"
+                  :enable-diarization="store.enableDiarization"
+                  :selection="store.engineSelection"
+                  :chinese-available="chineseAvailable"
+                  :disabled="store.isProcessing"
+                  @update:language="store.setLanguage($event)"
+                  @update:enable-diarization="
+                    store.setEnableDiarization($event)
+                  "
+                />
                 <Button
                   class="mt-12 h-10 w-full"
                   :disabled="blocksTranscription || isAwaitingPrefetch"
@@ -2351,6 +2378,15 @@ onUnmounted(() => {
                 <ChevronLeft class="h-4 w-4" />
                 Back
               </button>
+              <TranscriptionEngineOptions
+                v-if="!isAwaitingPrefetch"
+                class="mx-auto mb-4 w-full max-w-md"
+                :language="store.language"
+                :show-speakers="false"
+                :selection="store.engineSelection"
+                :chinese-available="chineseAvailable"
+                @update:language="store.setLanguage($event)"
+              />
               <LiveMicrophonePanel
                 :is-model-loading="isAwaitingPrefetch"
                 :model-load-progress="store.parakeetLoadProgress"

@@ -9,6 +9,25 @@ import {
 } from "@/features/transcription/lib/modelCache.js";
 import { TRANSCRIPTION_DB_NAME } from "@/features/transcription/lib/transcriptionDb.js";
 
+function rawModelKeys() {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(TRANSCRIPTION_DB_NAME);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const request = db
+        .transaction("modelCache")
+        .objectStore("modelCache")
+        .getAllKeys();
+      request.onsuccess = () => {
+        db.close();
+        resolve(request.result);
+      };
+      request.onerror = () => reject(request.error);
+    };
+  });
+}
+
 function deleteDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(TRANSCRIPTION_DB_NAME);
@@ -59,5 +78,37 @@ describe("transcription model cache metadata", () => {
     expect(
       Array.from(new Uint8Array(await getCachedModel("parakeet-vocab"))),
     ).toEqual([1, 2, 3]);
+  });
+
+  it("stores large models as chunks and reassembles them", async () => {
+    const bytes = Uint8Array.from({ length: 10 }, (_, index) => index + 1);
+    await putCachedModel("big-model", bytes.buffer, bytes.length, {
+      chunkBytes: 4,
+    });
+
+    expect(
+      Array.from(new Uint8Array(await getCachedModel("big-model"))),
+    ).toEqual(Array.from(bytes));
+    await expect(hasCachedModel("big-model")).resolves.toBe(true);
+    await expect(listCachedModelKeys()).resolves.toEqual(["big-model"]);
+    expect(await rawModelKeys()).toHaveLength(4);
+  });
+
+  it("still reads models cached as a single record", async () => {
+    await putCachedModel("small-model", Uint8Array.of(9, 8).buffer, 2);
+    expect(
+      Array.from(new Uint8Array(await getCachedModel("small-model"))),
+    ).toEqual([9, 8]);
+  });
+
+  it("rejects instead of hanging when the write transaction aborts", async () => {
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function () {
+      const transaction = this.transaction;
+      queueMicrotask(() => transaction.abort());
+      return /** @type {any} */ ({});
+    });
+    await expect(
+      putCachedModel("doomed", new ArrayBuffer(8), 8),
+    ).rejects.toThrow();
   });
 });

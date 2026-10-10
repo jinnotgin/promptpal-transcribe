@@ -9,8 +9,13 @@ import {
   stitchSegments,
 } from "@/features/transcription/lib/timestampStitching.js";
 import { constructTranscriptSegments } from "@/features/transcription/lib/transcriptPostProcessing.js";
+import { speakerLabelForId } from "@/features/transcription/lib/diarizationTurns.js";
 
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
+
+/**
+ * @typedef {{ engine: 'parakeet' } | { engine: 'qwen3-asr', variant: 'q4f16' | 'q4' }} AsrEngineOptions
+ */
 
 /**
  * Composable that runs ASR inference in a dedicated worker.
@@ -25,6 +30,8 @@ export function useAsrInference(store) {
   let asrDiagnostics = [];
   /** @type {Set<(reason?: unknown) => void>} */
   const pendingRejections = new Set();
+  /** @type {AsrEngineOptions} */
+  let activeEngine = { engine: "parakeet" };
 
   /**
    * Initialize the ASR worker, downloading and loading model files.
@@ -32,18 +39,22 @@ export function useAsrInference(store) {
    * call; this function only updates `parakeetLoadProgress` so phase does not
    * jump backwards once transcription has started.
    * @param {'webgpu' | 'wasm'} runtime
+   * @param {AsrEngineOptions} [engine]
    * @returns {Promise<void>}
    */
-  function initialize(runtime) {
+  function initialize(runtime, engine = { engine: "parakeet" }) {
     rejectPending(new DOMException("Superseded", "AbortError"));
     cleanup();
+    activeEngine = engine;
     return new Promise((resolve, reject) => {
-      const currentWorker = new Worker(
-        new URL("@/workers/asrWorker.js", import.meta.url),
-        {
-          type: "module",
-        },
-      );
+      const currentWorker =
+        engine.engine === "qwen3-asr"
+          ? new Worker(new URL("@/workers/qwenAsrWorker.js", import.meta.url), {
+              type: "module",
+            })
+          : new Worker(new URL("@/workers/asrWorker.js", import.meta.url), {
+              type: "module",
+            });
       worker = currentWorker;
       const assetProgress = new Map();
       const rejectRequest = (reason) => {
@@ -95,14 +106,17 @@ export function useAsrInference(store) {
 
       currentWorker.postMessage({
         type: "init",
-        payload: {
-          runtime,
-          assetKeys: {
-            encoder: runtime === "webgpu" ? "encoderFp16" : "encoderInt8",
-            decoder: "decoder",
-            vocab: "vocab",
-          },
-        },
+        payload:
+          engine.engine === "qwen3-asr"
+            ? { runtime, variant: engine.variant }
+            : {
+                runtime,
+                assetKeys: {
+                  encoder: runtime === "webgpu" ? "encoderFp16" : "encoderInt8",
+                  decoder: "decoder",
+                  vocab: "vocab",
+                },
+              },
       });
     });
   }
@@ -113,9 +127,16 @@ export function useAsrInference(store) {
    * @param {number} chunkStart
    * @param {number} chunkIndex
    * @param {number} totalChunks
+   * @param {string | null} [speaker] label for diarize-first engines
    * @returns {Promise<import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]>}
    */
-  function processChunk(chunkAudio, chunkStart, chunkIndex, totalChunks) {
+  function processChunk(
+    chunkAudio,
+    chunkStart,
+    chunkIndex,
+    totalChunks,
+    speaker = null,
+  ) {
     if (!worker)
       return Promise.reject(new Error("ASR worker is not initialized"));
     const currentWorker = worker;
@@ -146,7 +167,7 @@ export function useAsrInference(store) {
               start: seg.start,
               end: seg.end,
               words: seg.words,
-              speaker: null,
+              speaker: seg.speaker ?? null,
             }));
             resolve(segments);
             break;
@@ -166,6 +187,7 @@ export function useAsrInference(store) {
             chunkStart,
             chunkIndex,
             totalChunks,
+            speaker,
           },
         },
         [buffer],
@@ -243,8 +265,52 @@ export function useAsrInference(store) {
     return mergeTranscriptRows(stitchSegments(chunkResults));
   }
 
+  /**
+   * Transcribe planned regions of one window with a diarize-first engine.
+   * Regions carry absolute times and an optional 1-based speaker id.
+   * @param {Float32Array} pcm
+   * @param {Array<{ start: number, end: number, speakerId: number | null }>} regions
+   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number }} [options]
+   */
+  async function transcribeRegions(pcm, regions, options = {}) {
+    if (!worker) {
+      throw new Error(
+        "ASR worker is not initialized; call initialize() first.",
+      );
+    }
+    const offset = Number(options.offset || 0);
+    const windowIndex = Number(options.windowIndex || 0);
+    const totalWindows = Math.max(1, Number(options.totalWindows || 1));
+    /** @type {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} */
+    const rows = [];
+    for (let index = 0; index < regions.length; index += 1) {
+      if (store.isCancelled) throw new DOMException("Aborted", "AbortError");
+      const region = regions[index];
+      const audio = extractChunkAudio(pcm, {
+        start: region.start - offset,
+        end: region.end - offset,
+        regionIndex: index,
+      });
+      rows.push(
+        ...(await processChunk(
+          audio,
+          region.start,
+          windowIndex * Math.max(1, regions.length) + index,
+          totalWindows * Math.max(1, regions.length),
+          region.speakerId ? speakerLabelForId(region.speakerId) : null,
+        )),
+      );
+    }
+    return rows;
+  }
+
   /** @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments */
   function mergeSegments(segments) {
+    // Qwen rows are sentence segments without real word timings; rebuilding
+    // them from words would re-join Chinese with spaces.
+    if (activeEngine.engine === "qwen3-asr") {
+      return [...segments].sort((a, b) => a.start - b.start);
+    }
     return mergeTranscriptRows(segments);
   }
 
@@ -254,7 +320,8 @@ export function useAsrInference(store) {
    */
   async function finalizeSegments(segments, options = {}) {
     const rows = mergeSegments(segments);
-    if (!options.skipDiarize) return rows;
+    if (!options.skipDiarize || activeEngine.engine === "qwen3-asr")
+      return rows;
     return await constructTranscriptSegments(rows, { skipDiarize: true });
   }
 
@@ -282,6 +349,7 @@ export function useAsrInference(store) {
     initialize,
     transcribeChunks,
     transcribeWindow,
+    transcribeRegions,
     mergeSegments,
     finalizeSegments,
     processChunk,

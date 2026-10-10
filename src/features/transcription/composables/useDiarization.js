@@ -11,15 +11,25 @@ export function useDiarization(store) {
   /** @type {Map<number, { resolve: (value: any) => void, reject: (reason?: unknown) => void }>} */
   const pending = new Map();
 
-  /** @param {'webgpu' | 'wasm'} runtime */
-  async function initialize(runtime) {
+  /**
+   * @param {'webgpu' | 'wasm'} runtime
+   * @param {import('@/features/transcription/lib/engineSelection').DiarizationSelection} [selection]
+   */
+  async function initialize(
+    runtime,
+    selection = { engine: "nemotron", variant: "int8", maxSpeakers: 8 },
+  ) {
     cleanup();
-    worker = new Worker(
-      new URL("@/workers/diarizationWorker.js", import.meta.url),
-      {
-        type: "module",
-      },
-    );
+    worker =
+      selection.engine === "sortformer"
+        ? new Worker(
+            new URL("@/workers/diarizationWorker.js", import.meta.url),
+            { type: "module" },
+          )
+        : new Worker(
+            new URL("@/workers/nemotronDiarizationWorker.js", import.meta.url),
+            { type: "module" },
+          );
     worker.onmessage = handleMessage;
     worker.onerror = handleWorkerError;
     worker.onmessageerror = handleMessageError;
@@ -42,9 +52,25 @@ export function useDiarization(store) {
     try {
       const payload = await request("finalize", {
         segments: segments.map((segment) => ({ ...segment })),
+        mode: "words",
       });
       logDiarizationDiagnostics(payload.diagnostics);
       return payload.segments || segments;
+    } finally {
+      cleanup();
+    }
+  }
+
+  /**
+   * Finish the session and return non-overlapping speaker turns, used to cut
+   * audio into single-speaker regions before ASR.
+   * @returns {Promise<Array<{ id: number, start: number, end: number }>>}
+   */
+  async function finalizeTurns() {
+    try {
+      const payload = await request("finalize", { mode: "turns" });
+      logDiarizationDiagnostics(payload.diagnostics);
+      return payload.turns || [];
     } finally {
       cleanup();
     }
@@ -127,7 +153,14 @@ export function useDiarization(store) {
     }
   }
 
-  return { initialize, processWindow, finalize, diarize, abort };
+  return {
+    initialize,
+    processWindow,
+    finalize,
+    finalizeTurns,
+    diarize,
+    abort,
+  };
 }
 
 /**

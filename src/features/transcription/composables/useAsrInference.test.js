@@ -5,7 +5,9 @@ class FakeAsrWorker {
   static instances = [];
   static autoRespond = true;
 
-  constructor() {
+  constructor(url) {
+    this.url = String(url);
+    this.posted = [];
     this.listeners = new Set();
     this.onerror = null;
     this.terminated = false;
@@ -21,11 +23,13 @@ class FakeAsrWorker {
   }
 
   postMessage(message) {
+    this.posted.push(message);
     if (!FakeAsrWorker.autoRespond) return;
     queueMicrotask(() => {
       if (message.type === "init") this.emit({ type: "ready" });
       if (message.type === "process") {
         const start = message.payload.chunkStart;
+        const speaker = message.payload.speaker ?? undefined;
         this.emit({
           type: "progress",
           payload: {
@@ -39,10 +43,17 @@ class FakeAsrWorker {
           payload: {
             segments: [
               {
-                text: "hello",
+                text: speaker ? "大家好。" : "hello",
                 start,
                 end: start + 1,
-                words: [{ text: "hello", start, end: start + 1 }],
+                speaker,
+                words: [
+                  {
+                    text: speaker ? "大家好。" : "hello",
+                    start,
+                    end: start + 1,
+                  },
+                ],
               },
             ],
           },
@@ -190,6 +201,50 @@ describe("useAsrInference window sessions", () => {
       ]),
     ).resolves.toHaveLength(1);
     expect(FakeAsrWorker.instances).toHaveLength(2);
+    asr.cleanup();
+  });
+
+  it("runs Qwen3-ASR on speaker regions and keeps their labels and text", async () => {
+    const store = /** @type {any} */ ({
+      isCancelled: false,
+      setSegments: vi.fn(),
+      updateProgress: vi.fn(),
+    });
+    const asr = useAsrInference(store);
+    await asr.initialize("webgpu", { engine: "qwen3-asr", variant: "q4f16" });
+
+    const worker = FakeAsrWorker.instances[0];
+    expect(worker.url).toContain("qwenAsrWorker");
+    expect(worker.posted[0]).toMatchObject({
+      type: "init",
+      payload: { variant: "q4f16" },
+    });
+
+    const rows = await asr.transcribeRegions(
+      new Float32Array(16000 * 10),
+      [
+        { start: 301, end: 303, speakerId: 2 },
+        { start: 304, end: 306, speakerId: null },
+      ],
+      { offset: 300, windowIndex: 0, totalWindows: 1 },
+    );
+
+    expect(worker.posted[1].payload).toMatchObject({
+      chunkStart: 301,
+      speaker: "Speaker B",
+    });
+    expect(worker.posted[1].payload.chunkAudio.byteLength).toBe(16000 * 2 * 4);
+    expect(rows.map((row) => [row.text, row.start, row.speaker])).toEqual([
+      ["大家好。", 301, "Speaker B"],
+      ["hello", 304, null],
+    ]);
+    expect(asr.mergeSegments(rows).map((row) => row.text)).toEqual([
+      "大家好。",
+      "hello",
+    ]);
+    await expect(
+      asr.finalizeSegments(rows, { skipDiarize: true }),
+    ).resolves.toEqual(rows);
     asr.cleanup();
   });
 });

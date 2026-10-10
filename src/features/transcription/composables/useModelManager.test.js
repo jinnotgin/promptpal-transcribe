@@ -76,7 +76,12 @@ describe("useModelManager", () => {
     const store = makeStore();
     const manager = useModelManager(store);
 
-    const prefetch = manager.ensureModelsReady("webgpu", true);
+    const prefetch = manager.ensureModelsReady([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "diarization",
+    ]);
     await Promise.resolve();
 
     expect(downloadState.started).toEqual(["encoderFp16"]);
@@ -118,18 +123,70 @@ describe("useModelManager", () => {
     ]);
     const store = makeStore();
 
-    await useModelManager(store).checkCache();
+    await useModelManager(store).checkCache([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "diarization",
+    ]);
 
     expect(store.parakeetCached).toBe(true);
     expect(store.sortformerCached).toBe(true);
     expect(listCachedModelKeys).toHaveBeenCalledOnce();
   });
 
+  it("checks the selected engines' assets, including Nemotron and Qwen", async () => {
+    vi.mocked(listCachedModelKeys).mockResolvedValue([
+      "qwen3-asr-encoder-fp16",
+      "nemotron3-diarization-int8",
+      "nemotron3-diarization-int8-data",
+    ]);
+    const store = makeStore();
+
+    await useModelManager(store).checkCache([
+      "qwenEncoderFp16",
+      "qwenVocab",
+      "nemotronInt8",
+      "nemotronInt8Data",
+    ]);
+
+    expect(store.parakeetCached).toBe(false);
+    expect(store.sortformerCached).toBe(true);
+  });
+
+  it("downloads only the selected diarizer's assets", async () => {
+    const store = makeStore();
+    const manager = useModelManager(store);
+    const pending = manager.ensureDiarizationModel([
+      "qwenVocab",
+      "nemotronInt8",
+      "nemotronInt8Data",
+    ]);
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual(["nemotronInt8"]),
+    );
+    downloadState.resolvers.get("nemotronInt8")?.(new ArrayBuffer(1));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual([
+        "nemotronInt8",
+        "nemotronInt8Data",
+      ]),
+    );
+    downloadState.resolvers.get("nemotronInt8Data")?.(new ArrayBuffer(1));
+    await pending;
+    expect(store.sortformerCached).toBe(true);
+  });
+
   it("reports aggregate ASR progress while keeping diarization progress separate", async () => {
     const store = makeStore();
     const manager = useModelManager(store);
 
-    const prefetch = manager.ensureModelsReady("webgpu", true);
+    const prefetch = manager.ensureModelsReady([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "diarization",
+    ]);
     await Promise.resolve();
 
     downloadState.progressCallbacks.get("encoderFp16")?.({

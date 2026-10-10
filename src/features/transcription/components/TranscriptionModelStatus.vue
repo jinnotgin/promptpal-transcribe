@@ -2,7 +2,15 @@
 import { computed } from "vue";
 import { CheckCircle2, Download, Circle } from "lucide-vue-next";
 
+/** @typedef {import('@/features/transcription/lib/engineSelection').EngineSelection} EngineSelection */
+
 const props = defineProps({
+  selection: {
+    type: /** @type {import('vue').PropType<EngineSelection | null>} */ (
+      Object
+    ),
+    default: null,
+  },
   parakeetCached: { type: Boolean, default: false },
   sortformerCached: { type: Boolean, default: false },
   parakeetLoadProgress: { type: Number, default: 0 },
@@ -26,6 +34,32 @@ const sortformerStatus = computed(() => {
     return "downloading";
   return "missing";
 });
+
+const MODEL_LINKS = {
+  parakeet: {
+    name: "NVIDIA Parakeet TDT v3",
+    href: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+  },
+  "qwen3-asr": {
+    name: "Qwen3-ASR 0.6B",
+    href: "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+  },
+  nemotron: {
+    name: "NVIDIA Nemotron 3 Diarization",
+    href: "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+  },
+  sortformer: {
+    name: "NVIDIA Sortformer v2.1",
+    href: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1",
+  },
+};
+
+const asrModel = computed(
+  () => MODEL_LINKS[props.selection?.asr.engine ?? "parakeet"],
+);
+const diarizerModel = computed(
+  () => MODEL_LINKS[props.selection?.diarization?.engine ?? "nemotron"],
+);
 
 function statusIcon(status) {
   if (status === "cached") return CheckCircle2;
@@ -52,11 +86,11 @@ function statusColor(status) {
         <p class="text-xs text-foreground">
           <span class="font-medium">STT model:</span>
           <a
-            href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"
+            :href="asrModel.href"
             target="_blank"
             rel="noopener noreferrer"
             class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >NVIDIA Parakeet TDT v3</a
+            >{{ asrModel.name }}</a
           >
         </p>
       </div>
@@ -72,11 +106,11 @@ function statusColor(status) {
         <p class="text-xs text-foreground">
           <span class="font-medium">Diarizer model:</span>
           <a
-            href="https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1"
+            :href="diarizerModel.href"
             target="_blank"
             rel="noopener noreferrer"
             class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >NVIDIA Sortformer v2.1</a
+            >{{ diarizerModel.name }}</a
           >
         </p>
       </div>
