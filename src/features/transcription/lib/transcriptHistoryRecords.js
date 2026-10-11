@@ -10,7 +10,10 @@
 
 import { normalizeWaveformSamples } from "./waveformAccumulator.js";
 import { normalizeTranscriptAudioManifest } from "./transcriptAudioManifest.js";
-import { normalizeTranscriptionLanguage } from "./engineSelection.js";
+import {
+  normalizeSpeakerOptions,
+  normalizeTranscriptionLanguage,
+} from "./engineSelection.js";
 import { joinWordTexts } from "./wordText.js";
 
 /**
@@ -122,6 +125,7 @@ export function derivePreview(segments) {
  *   isLiveRecording?: boolean,
  *   hasReprocessedLiveRecording?: boolean,
  *   language?: string,
+ *   speakerOptions?: import('./engineSelection.js').SpeakerOptions,
  *   segments?: TranscriptSegment[],
  *   addedSpeakerIds?: string[],
  * }} entry
@@ -143,6 +147,7 @@ export function buildSummary(entry) {
     isLiveRecording: Boolean(entry.isLiveRecording),
     hasReprocessedLiveRecording: Boolean(entry.hasReprocessedLiveRecording),
     language: normalizeTranscriptionLanguage(entry.language),
+    speakerOptions: normalizeSpeakerOptions(entry.speakerOptions),
     speakerCount: countSpeakers(segments, entry.addedSpeakerIds),
     segmentCount: segments.length,
     preview: derivePreview(segments),

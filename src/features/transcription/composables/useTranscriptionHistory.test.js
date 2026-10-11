@@ -87,6 +87,23 @@ describe("useTranscriptionHistory", () => {
     expect((await history.loadTranscript(legacyId))?.language).toBe("en");
   });
 
+  it("round-trips the speaker options chosen for the recording", async () => {
+    const history = useTranscriptionHistory();
+    const id = await history.saveTranscript(
+      makeEntry({ speakerOptions: { scale: "large", count: 12 } }),
+    );
+    expect((await history.loadTranscript(id))?.speakerOptions).toEqual({
+      scale: "large",
+      count: 12,
+    });
+
+    const legacyId = await history.saveTranscript(makeEntry());
+    expect((await history.loadTranscript(legacyId))?.speakerOptions).toEqual({
+      scale: "group",
+      count: 10,
+    });
+  });
+
   it("persists manifest metadata without duplicating new audio in the payload", async () => {
     const history = useTranscriptionHistory();
     const id = "manifest-record";

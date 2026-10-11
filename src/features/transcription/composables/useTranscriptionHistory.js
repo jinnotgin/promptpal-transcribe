@@ -61,6 +61,7 @@ export function useTranscriptionHistory() {
    *   addedSpeakerIds?: string[],
    *   waveformSamples?: number[],
    *   language?: import('@/features/transcription/lib/engineSelection').TranscriptionLanguage,
+   *   speakerOptions?: import('@/features/transcription/lib/engineSelection').SpeakerOptions,
    * }} entry
    * @param {{ finalizeAudio?: boolean }} [options]
    * @returns {Promise<string>}

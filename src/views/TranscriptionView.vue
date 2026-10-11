@@ -1,6 +1,7 @@
 <script setup>
 import {
   ref,
+  reactive,
   computed,
   inject,
   onMounted,
@@ -77,6 +78,7 @@ import TranscriptionSettingsPanel from "@/features/transcription/components/Tran
 import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
 import TranscriptionLanguageOptions from "@/features/transcription/components/TranscriptionLanguageOptions.vue";
 import {
+  normalizeSpeakerOptions,
   normalizeTranscriptionLanguage,
   selectTranscriptionEngines,
 } from "@/features/transcription/lib/engineSelection.js";
@@ -265,6 +267,18 @@ const prefetchAsrEngine = computed(() =>
  * @type {import('vue').Ref<import('@/features/transcription/lib/engineSelection').TranscriptionLanguage>}
  */
 const activeTranscriptLanguage = ref(store.transcriptionLanguage);
+/**
+ * Speaker options of the transcript on screen, kept like its language.
+ * @type {import('vue').Ref<import('@/features/transcription/lib/engineSelection').SpeakerOptions>}
+ */
+const activeSpeakerOptions = ref(currentSpeakerOptions());
+
+function currentSpeakerOptions() {
+  return normalizeSpeakerOptions({
+    scale: store.speakerScale,
+    count: store.speakerCount,
+  });
+}
 const prefetchDiarizationEngine = computed(() =>
   store.speakerScale === "large" ? "sherpa" : "nemotron",
 );
@@ -563,6 +577,7 @@ function resetWorkingTranscriptState() {
   currentPlaybackTime.value = 0;
   isAudioPlaying.value = false;
   isReprocessing.value = false;
+  isReprocessOptionsOpen.value = false;
 }
 
 async function handleStartTranscription() {
@@ -579,6 +594,7 @@ async function handleStartTranscription() {
   }
   if (startToken !== transcriptionStartToken) return;
   activeTranscriptLanguage.value = store.transcriptionLanguage;
+  activeSpeakerOptions.value = currentSpeakerOptions();
   const pendingTranscriptId = generateRecordId();
   await pipeline.start({ transcriptId: pendingTranscriptId });
   if (store.processPhase === "complete" && !store.segments.length) {
@@ -644,6 +660,7 @@ async function persistTranscriptRecord(options = {}) {
           options.hasReprocessedLiveRecording ??
           hasReprocessedLiveRecording.value,
         language: activeTranscriptLanguage.value,
+        speakerOptions: activeSpeakerOptions.value,
         audioManifest: options.audioManifest ?? activeAudioManifest.value,
         audioFileName: options.audioFileName ?? store.fileName,
         audioMimeType:
@@ -696,6 +713,8 @@ async function hydrateFromRecord(record) {
     activeTranscriptLanguage.value = normalizeTranscriptionLanguage(
       record.language,
     );
+    activeSpeakerOptions.value = normalizeSpeakerOptions(record.speakerOptions);
+    isReprocessOptionsOpen.value = false;
     activeAudioManifest.value = record.audioManifest ?? null;
     activeAudioPartIndex.value = 0;
     let playbackBlob = null;
@@ -898,6 +917,7 @@ async function handleStartLive() {
   }
   if (startToken !== liveStartToken) return;
   activeTranscriptLanguage.value = store.transcriptionLanguage;
+  activeSpeakerOptions.value = currentSpeakerOptions();
   pendingLiveTranscriptId.value = generateRecordId();
   await livePipeline.start({ transcriptId: pendingLiveTranscriptId.value });
   await microphoneDevices.refreshMicrophones();
@@ -988,19 +1008,42 @@ const canDownloadLiveRecording = computed(
     hasDownloadableLiveRecordingAudio.value,
 );
 const isReprocessing = ref(false);
+const isReprocessOptionsOpen = ref(false);
+/**
+ * Options for the next reprocess. They start from the recording's own
+ * language and speaker options, never the start screen's, and stay local
+ * so reprocessing does not change the options for the next recording.
+ */
+const reprocessOptions = reactive({
+  /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} */
+  language: "en",
+  enableDiarization: true,
+  /** @type {'group' | 'large'} */
+  speakerScale: "group",
+  speakerCount: activeSpeakerOptions.value.count,
+});
+
+function openReprocessOptions() {
+  Object.assign(reprocessOptions, {
+    language: activeTranscriptLanguage.value,
+    // Speaker labels are the main reason to reprocess a live recording.
+    enableDiarization: true,
+    speakerScale: activeSpeakerOptions.value.scale,
+    speakerCount: activeSpeakerOptions.value.count,
+  });
+  isReprocessOptionsOpen.value = true;
+}
 
 async function handleReprocess() {
+  if (!activeAudioManifest.value || !activeTranscriptId.value) return;
+  const options = { ...reprocessOptions };
+  isReprocessOptionsOpen.value = false;
   isReprocessing.value = true;
-  store.setEnableDiarization(true);
   try {
-    if (!activeAudioManifest.value || !activeTranscriptId.value) return;
     await pipeline.reprocessFromManifest(
       activeTranscriptId.value,
       activeAudioManifest.value,
-      {
-        enableDiarization: true,
-        language: activeTranscriptLanguage.value,
-      },
+      options,
     );
   } finally {
     isReprocessing.value = false;
@@ -1008,6 +1051,11 @@ async function handleReprocess() {
 
   if (store.processPhase === "complete" && store.segments.length) {
     hasReprocessedLiveRecording.value = true;
+    activeTranscriptLanguage.value = options.language;
+    activeSpeakerOptions.value = normalizeSpeakerOptions({
+      scale: options.speakerScale,
+      count: options.speakerCount,
+    });
     await persistTranscriptRecord({
       audioManifest: activeAudioManifest.value,
       audioFileName: store.fileName,
@@ -1546,17 +1594,54 @@ onUnmounted(() => {
             identification.</span
           >
         </div>
-        <div class="flex items-center gap-3">
+        <div v-if="!isReprocessOptionsOpen" class="flex items-center gap-3">
           <Button
             size="sm"
             class="h-8 px-3 text-xs"
             :disabled="isReprocessing"
-            @click="handleReprocess"
+            @click="openReprocessOptions"
           >
             <RefreshCw v-if="!isReprocessing" class="mr-1.5 h-3 w-3" />
             <Loader2 v-else class="mr-1.5 h-3 w-3 animate-spin" />
             Reprocess
           </Button>
+        </div>
+        <div v-else class="flex w-full flex-col gap-3 pb-1">
+          <TranscriptionLanguageOptions
+            :language="reprocessOptions.language"
+            :disabled="isReprocessing"
+            @update:language="
+              reprocessOptions.language = normalizeTranscriptionLanguage($event)
+            "
+          />
+          <SpeakerIdentificationOptions
+            :enabled="reprocessOptions.enableDiarization"
+            :scale="reprocessOptions.speakerScale"
+            :count="reprocessOptions.speakerCount"
+            :disabled="isReprocessing"
+            @update:enabled="reprocessOptions.enableDiarization = $event"
+            @update:scale="reprocessOptions.speakerScale = $event"
+            @update:count="reprocessOptions.speakerCount = $event"
+          />
+          <div class="flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              class="h-8 px-3 text-xs"
+              @click="isReprocessOptionsOpen = false"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              class="h-8 px-3 text-xs"
+              :disabled="isReprocessing"
+              @click="handleReprocess"
+            >
+              <RefreshCw class="mr-1.5 h-3 w-3" />
+              Reprocess
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -2474,7 +2559,11 @@ onUnmounted(() => {
             (!store.liveMode || isReprocessing)
           "
           :phase="store.processPhase"
-          :enable-diarization="isReprocessing ? true : store.enableDiarization"
+          :enable-diarization="
+            isReprocessing
+              ? reprocessOptions.enableDiarization
+              : store.enableDiarization
+          "
           :transcription-progress="store.transcriptionProgress"
           :diarization-progress="store.diarizationProgress"
           :diarization-load-progress="store.diarizationLoadProgress"

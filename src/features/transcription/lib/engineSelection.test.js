@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LARGE_GROUP_SPEAKERS,
   clampLargeGroupSpeakers,
+  normalizeSpeakerOptions,
   normalizeTranscriptionLanguage,
   selectTranscriptionEngines,
 } from "./engineSelection.js";
@@ -154,5 +155,26 @@ describe("clampLargeGroupSpeakers", () => {
     expect(clampLargeGroupSpeakers(Number.NaN)).toBe(
       LARGE_GROUP_SPEAKERS.default,
     );
+  });
+});
+
+describe("normalizeSpeakerOptions", () => {
+  it("keeps stored speaker options and falls back to automatic detection", () => {
+    expect(normalizeSpeakerOptions({ scale: "large", count: 14 })).toEqual({
+      scale: "large",
+      count: 14,
+    });
+    expect(normalizeSpeakerOptions({ scale: "large", count: 99 })).toEqual({
+      scale: "large",
+      count: LARGE_GROUP_SPEAKERS.max,
+    });
+    expect(normalizeSpeakerOptions(undefined)).toEqual({
+      scale: "group",
+      count: LARGE_GROUP_SPEAKERS.default,
+    });
+    expect(normalizeSpeakerOptions({ scale: "huge" })).toEqual({
+      scale: "group",
+      count: LARGE_GROUP_SPEAKERS.default,
+    });
   });
 });

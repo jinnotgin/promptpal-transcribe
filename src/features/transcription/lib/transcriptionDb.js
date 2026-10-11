@@ -36,6 +36,7 @@ export const LEGACY_TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  *   isLiveRecording: boolean,
  *   hasReprocessedLiveRecording: boolean,
  *   language?: import('./engineSelection.js').TranscriptionLanguage,
+ *   speakerOptions?: import('./engineSelection.js').SpeakerOptions,
  *   speakerCount: number,
  *   segmentCount: number,
  *   preview: string,

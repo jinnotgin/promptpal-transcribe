@@ -19,6 +19,7 @@
  * @typedef {'solo' | 'group' | 'large'} SpeakerMode
  * @typedef {'en' | 'zh' | 'zh-en'} TranscriptionLanguage
  * @typedef {'zh' | 'auto'} SenseVoiceLanguage
+ * @typedef {{ scale: 'group' | 'large', count: number }} SpeakerOptions
  * @typedef {{ engine: 'parakeet', variant: 'fp16' | 'int8' } | { engine: 'sensevoice', variant: 'int8', language: SenseVoiceLanguage }} AsrSelection
  * @typedef {{ engine: 'nemotron', variant: 'int8', maxSpeakers: 8 } | { engine: 'sherpa', variant: 'campplus', numSpeakers: number }} DiarizationSelection
  * @typedef {{
@@ -59,6 +60,22 @@ export function normalizeTranscriptionLanguage(value) {
     : "en";
 }
 const SHERPA_ASSETS = ["sherpaSegmentation", "sherpaEmbedding"];
+
+/**
+ * Speaker options saved with a transcript; records without them fall back to
+ * automatic identification of up to 8 speakers.
+ * @param {unknown} value
+ * @returns {SpeakerOptions}
+ */
+export function normalizeSpeakerOptions(value) {
+  const options = /** @type {{ scale?: unknown, count?: unknown } | null} */ (
+    value && typeof value === "object" ? value : null
+  );
+  return {
+    scale: options?.scale === "large" ? "large" : "group",
+    count: clampLargeGroupSpeakers(Number(options?.count)),
+  };
+}
 
 /**
  * @param {number | undefined} count

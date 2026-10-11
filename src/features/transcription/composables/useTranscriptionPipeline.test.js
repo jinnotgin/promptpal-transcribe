@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   diarizationInit: vi.fn(),
   asrInit: vi.fn(),
   transcribeWindow: vi.fn(),
+  getPartBlob: vi.fn(),
 }));
 
 vi.mock(
@@ -80,6 +81,7 @@ vi.mock("./useTranscriptionAudioAssets.js", () => ({
     assertStorageHeadroom: mocks.assertStorageHeadroom,
     rollbackStaging: mocks.rollbackStaging,
     stageFragment: mocks.stageFragment,
+    getPartBlob: mocks.getPartBlob,
   }),
 }));
 
@@ -172,6 +174,9 @@ describe("useTranscriptionPipeline uploaded media", () => {
       ],
     });
     mocks.continuousCancel.mockResolvedValue(undefined);
+    mocks.getPartBlob.mockResolvedValue(
+      new Blob(["live"], { type: "audio/webm;codecs=opus" }),
+    );
     mocks.checkCache.mockResolvedValue(undefined);
     mocks.ensureDiarizationModel.mockResolvedValue(undefined);
     mocks.diarizationInit.mockResolvedValue(undefined);
@@ -360,5 +365,73 @@ describe("useTranscriptionPipeline uploaded media", () => {
       "WebM storage unavailable",
     );
     expect(mocks.rollbackStaging).toHaveBeenCalledWith("upload-text-only");
+  });
+
+  describe("reprocessFromManifest", () => {
+    const liveManifest =
+      /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} */ ({
+        version: 1,
+        duration: 620,
+        source: "live",
+        parts: [
+          {
+            index: 0,
+            start: 0,
+            end: 620,
+            mimeType: "audio/webm;codecs=opus",
+            sizeBytes: 1234,
+            fragmentCount: 1,
+          },
+        ],
+      });
+
+    it("uses the language and speaker options chosen for the reprocess", async () => {
+      const store = makeStore();
+      store.transcriptionLanguage = "en";
+
+      await useTranscriptionPipeline(store).reprocessFromManifest(
+        "live-record",
+        liveManifest,
+        {
+          language: "zh",
+          enableDiarization: true,
+          speakerScale: "large",
+          speakerCount: 12,
+        },
+      );
+
+      expect(mocks.asrInit).toHaveBeenCalledWith("wasm", {
+        engine: "sensevoice",
+        variant: "int8",
+        language: "zh",
+      });
+      expect(mocks.diarizationInit).toHaveBeenCalledWith("wasm", {
+        engine: "sherpa",
+        variant: "campplus",
+        numSpeakers: 12,
+      });
+      expect(store.processPhase).toBe("complete");
+      expect(store).toMatchObject({
+        transcriptionLanguage: "en",
+        enableDiarization: false,
+        speakerScale: "group",
+        speakerCount: 10,
+      });
+    });
+
+    it("skips speaker models when the reprocess turns identification off", async () => {
+      const store = makeStore();
+      store.enableDiarization = true;
+
+      await useTranscriptionPipeline(store).reprocessFromManifest(
+        "live-record",
+        liveManifest,
+        { language: "en", enableDiarization: false },
+      );
+
+      expect(mocks.ensureDiarizationModel).not.toHaveBeenCalled();
+      expect(mocks.diarizationInit).not.toHaveBeenCalled();
+      expect(store.processPhase).toBe("complete");
+    });
   });
 });

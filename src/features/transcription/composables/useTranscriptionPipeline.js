@@ -24,6 +24,15 @@ import {
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
 
 /**
+ * @typedef {{
+ *   enableDiarization?: boolean,
+ *   language?: import('@/features/transcription/lib/engineSelection').TranscriptionLanguage,
+ *   speakerScale?: 'group' | 'large',
+ *   speakerCount?: number,
+ * }} RecordingOptions
+ */
+
+/**
  * Top-level orchestrator. Sequences the full transcription pipeline:
  *   1. Check/download models
  *   2. Transcode audio to 16kHz mono PCM
@@ -69,19 +78,20 @@ export function useTranscriptionPipeline(store) {
   }
 
   /**
-   * Engines for this run; reprocessing may override speaker identification
-   * and keeps the language the recording was made with.
-   * @param {boolean} enableDiarization
-   * @param {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} [language]
+   * Engines for this run. New runs use the store's options; reprocessing
+   * passes the options chosen for that recording instead.
+   * @param {RecordingOptions} [options]
    */
-  function selectEngines(
-    enableDiarization,
+  function selectEngines({
+    enableDiarization = store.enableDiarization,
     language = store.transcriptionLanguage,
-  ) {
+    speakerScale = store.speakerScale,
+    speakerCount = store.speakerCount,
+  } = {}) {
     return selectTranscriptionEngines({
-      speakerMode: enableDiarization ? (store.speakerScale ?? "group") : "solo",
+      speakerMode: enableDiarization ? (speakerScale ?? "group") : "solo",
       runtime: store.effectiveRuntime,
-      speakerCount: store.speakerCount,
+      speakerCount,
       language: normalizeTranscriptionLanguage(language),
     });
   }
@@ -139,7 +149,7 @@ export function useTranscriptionPipeline(store) {
     store.error = null;
 
     const runtime = store.effectiveRuntime;
-    const selection = selectEngines(store.enableDiarization);
+    const selection = selectEngines();
 
     trackAnalyticsEvent("transcription_started", {
       runtime,
@@ -459,7 +469,7 @@ export function useTranscriptionPipeline(store) {
    * decoded through the existing bounded window contract.
    * @param {string} transcriptId
    * @param {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} manifestValue
-   * @param {{ enableDiarization?: boolean, language?: import('@/features/transcription/lib/engineSelection').TranscriptionLanguage }} [options]
+   * @param {RecordingOptions} [options]
    */
   async function reprocessFromManifest(
     transcriptId,
@@ -467,9 +477,11 @@ export function useTranscriptionPipeline(store) {
     options = {},
   ) {
     const manifest = normalizeTranscriptAudioManifest(manifestValue);
-    const enableDiarization = options.enableDiarization ?? true;
     const runtime = store.effectiveRuntime;
-    const selection = selectEngines(enableDiarization, options.language);
+    const selection = selectEngines({
+      enableDiarization: true,
+      ...options,
+    });
     const startTime = Date.now();
     store.clearProcessingState();
     store.segments = [];
