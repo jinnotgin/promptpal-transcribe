@@ -126,22 +126,25 @@ function stepCount(delta) {
         </div>
       </div>
 
-      <p class="flex gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <span>
-          Accuracy drops in large groups. Enter the exact number of people for
-          the best results.
-        </span>
-      </p>
+      <!-- The warning and its way out read as one group; the link aligns with the warning text. -->
+      <div class="space-y-1.5">
+        <p class="flex gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            Accuracy drops in large groups. Enter the exact number of people for
+            the best results.
+          </span>
+        </p>
 
-      <button
-        type="button"
-        :disabled="disabled"
-        class="text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
-        @click="emit('update:scale', 'group')"
-      >
-        Back to automatic (up to {{ GROUP_MAX_SPEAKERS }})
-      </button>
+        <button
+          type="button"
+          :disabled="disabled"
+          class="block pl-5 text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
+          @click="emit('update:scale', 'group')"
+        >
+          Back to higher accuracy (up to {{ GROUP_MAX_SPEAKERS }})
+        </button>
+      </div>
     </div>
   </div>
 </template>
