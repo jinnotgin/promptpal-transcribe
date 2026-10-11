@@ -30,18 +30,18 @@ const description = computed(
 <template>
   <div class="rounded-md border border-border bg-card px-3 py-3">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
+      <div class="min-w-48 flex-1">
         <p id="transcription-language-label" class="text-sm font-medium">
           Language
         </p>
         <p class="text-xs text-muted-foreground">
           {{ description }}
-          <span v-if="language === 'zh'" class="whitespace-nowrap">
+          <span v-if="language === 'zh'">
             (Has English too?
             <button
               type="button"
               :disabled="disabled"
-              class="underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
+              class="whitespace-nowrap underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
               @click="emit('update:language', 'zh-en')"
             >
               Use Mixed</button
@@ -50,6 +50,7 @@ const description = computed(
         </p>
       </div>
       <SegmentedControl
+        class="shrink-0"
         aria-labelledby="transcription-language-label"
         :model-value="language"
         :options="languageOptions"
