@@ -18,10 +18,7 @@ const props = defineProps({
 
 const emit = defineEmits(["update:enabled", "update:scale", "update:count"]);
 
-const scaleOptions = [
-  { value: "group", label: `Up to ${GROUP_MAX_SPEAKERS}` },
-  { value: "large", label: `More than ${GROUP_MAX_SPEAKERS}` },
-];
+// Up to 8 speakers are found automatically; only larger groups need a count.
 const isLarge = computed(() => props.scale === "large");
 
 /** @param {Event} event */
@@ -51,7 +48,8 @@ function stepCount(delta) {
           Speaker identification
         </p>
         <p class="text-xs text-muted-foreground">
-          Identify and label speakers when possible.
+          Detects and labels up to {{ GROUP_MAX_SPEAKERS }} speakers
+          automatically.
         </p>
       </div>
       <Switch
@@ -63,33 +61,21 @@ function stepCount(delta) {
     </div>
 
     <div v-if="enabled" class="mt-3 space-y-3 border-t border-border pt-3">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <p id="speaker-scale-label" class="text-xs font-medium">
-          How many speakers?
-        </p>
-        <div
-          role="radiogroup"
-          aria-labelledby="speaker-scale-label"
-          class="inline-flex gap-1 rounded-md bg-muted p-1"
-        >
-          <button
-            v-for="option in scaleOptions"
-            :key="option.value"
-            type="button"
-            role="radio"
-            :aria-checked="scale === option.value"
-            :disabled="disabled"
-            class="rounded px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-            :class="
-              scale === option.value
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            "
-            @click="emit('update:scale', option.value)"
-          >
-            {{ option.label }}
-          </button>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p id="speaker-scale-label" class="text-xs font-medium">
+            More than {{ GROUP_MAX_SPEAKERS }} speakers?
+          </p>
+          <p class="text-xs text-muted-foreground">
+            Set how many people speak for an accurate split.
+          </p>
         </div>
+        <Switch
+          aria-labelledby="speaker-scale-label"
+          :model-value="isLarge"
+          :disabled="disabled"
+          @update:model-value="emit('update:scale', $event ? 'large' : 'group')"
+        />
       </div>
 
       <div

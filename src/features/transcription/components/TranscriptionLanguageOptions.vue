@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 
 const props = defineProps({
   /** "en" (Parakeet) or "zh-en" (SenseVoice) */
@@ -30,29 +31,13 @@ const description = computed(() =>
         </p>
         <p class="text-xs text-muted-foreground">{{ description }}</p>
       </div>
-      <div
-        role="radiogroup"
+      <SegmentedControl
         aria-labelledby="transcription-language-label"
-        class="inline-flex gap-1 rounded-md bg-muted p-1"
-      >
-        <button
-          v-for="option in languageOptions"
-          :key="option.value"
-          type="button"
-          role="radio"
-          :aria-checked="language === option.value"
-          :disabled="disabled"
-          class="rounded px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-          :class="
-            language === option.value
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'
-          "
-          @click="emit('update:language', option.value)"
-        >
-          {{ option.label }}
-        </button>
-      </div>
+        :model-value="language"
+        :options="languageOptions"
+        :disabled="disabled"
+        @update:model-value="emit('update:language', $event)"
+      />
     </div>
   </div>
 </template>
