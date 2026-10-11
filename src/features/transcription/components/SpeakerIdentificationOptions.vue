@@ -129,8 +129,8 @@ function stepCount(delta) {
       <p class="flex gap-1.5 text-xs text-amber-700 dark:text-amber-400">
         <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
-          Accuracy drops in large groups, and similar voices may get mixed up.
-          Enter the exact number of people for the best results.
+          Accuracy drops in large groups. Enter the exact number of people for
+          the best results.
         </span>
       </p>
 
