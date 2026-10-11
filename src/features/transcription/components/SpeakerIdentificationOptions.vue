@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from "vue";
-import { Minus, Plus } from "lucide-vue-next";
+import { AlertTriangle, Minus, Plus } from "lucide-vue-next";
 import { Switch } from "@/components/ui/switch";
 import {
   GROUP_MAX_SPEAKERS,
@@ -48,8 +48,13 @@ function stepCount(delta) {
           Speaker identification
         </p>
         <p class="text-xs text-muted-foreground">
-          Detects and labels up to {{ GROUP_MAX_SPEAKERS }} speakers
-          automatically.
+          <template v-if="enabled && isLarge">
+            Labels the number of speakers you set.
+          </template>
+          <template v-else>
+            Detects and labels up to {{ GROUP_MAX_SPEAKERS }} speakers
+            automatically.
+          </template>
         </p>
       </div>
       <Switch
@@ -60,28 +65,22 @@ function stepCount(delta) {
       />
     </div>
 
-    <div v-if="enabled" class="mt-3 space-y-3 border-t border-border pt-3">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p id="speaker-scale-label" class="text-xs font-medium">
-            More than {{ GROUP_MAX_SPEAKERS }} speakers?
-          </p>
-          <p class="text-xs text-muted-foreground">
-            Set how many people speak for an accurate split.
-          </p>
-        </div>
-        <Switch
-          aria-labelledby="speaker-scale-label"
-          :model-value="isLarge"
-          :disabled="disabled"
-          @update:model-value="emit('update:scale', $event ? 'large' : 'group')"
-        />
-      </div>
+    <!-- Larger groups are an advanced case: keep the entry point quiet. -->
+    <button
+      v-if="enabled && !isLarge"
+      type="button"
+      :disabled="disabled"
+      class="mt-2 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+      @click="emit('update:scale', 'large')"
+    >
+      More than {{ GROUP_MAX_SPEAKERS }} people?
+    </button>
 
-      <div
-        v-if="isLarge"
-        class="flex flex-wrap items-center justify-between gap-2"
-      >
+    <div
+      v-if="enabled && isLarge"
+      class="mt-3 space-y-3 border-t border-border pt-3"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
         <div>
           <label for="speaker-count" class="text-xs font-medium">
             Number of speakers
@@ -126,6 +125,23 @@ function stepCount(delta) {
           </button>
         </div>
       </div>
+
+      <p class="flex gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          Accuracy drops in large groups: similar voices may be merged or
+          mislabeled. An exact count helps.
+        </span>
+      </p>
+
+      <button
+        type="button"
+        :disabled="disabled"
+        class="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+        @click="emit('update:scale', 'group')"
+      >
+        Back to automatic (up to {{ GROUP_MAX_SPEAKERS }})
+      </button>
     </div>
   </div>
 </template>
