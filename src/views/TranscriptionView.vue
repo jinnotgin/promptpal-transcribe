@@ -32,9 +32,14 @@ import {
   RefreshCw,
   RotateCcw,
   Plus,
-  Lock,
+  ShieldCheck,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -121,6 +126,9 @@ const isSeekingWaveform = ref(false);
 const hoverPlaybackRatio = ref(null);
 const isSpeakerPanelOpen = ref(true);
 const isTranscriptCopied = ref(false);
+const isPrivacyNoteOpen = ref(false);
+const isPrivacyNoteHovered = ref(false);
+let privacyNoteCloseTimer = null;
 const isStoppingLive = ref(false);
 const isLiveRecordingExporting = ref(false);
 const liveRecordingExportProgress = liveRecordingMp3Export.progress;
@@ -1025,6 +1033,27 @@ async function handleClearCache() {
   });
 }
 
+function handlePrivacyNotePointerEnter(event) {
+  if (event.pointerType !== "mouse") return;
+  clearTimeout(privacyNoteCloseTimer);
+  isPrivacyNoteHovered.value = true;
+  isPrivacyNoteOpen.value = true;
+}
+
+function handlePrivacyNotePointerLeave(event) {
+  if (event.pointerType !== "mouse") return;
+  isPrivacyNoteHovered.value = false;
+  clearTimeout(privacyNoteCloseTimer);
+  privacyNoteCloseTimer = setTimeout(() => {
+    isPrivacyNoteOpen.value = false;
+  }, 150);
+}
+
+// A click while hovering would otherwise toggle the hover-opened note shut.
+function handlePrivacyNoteOpenChange(open) {
+  isPrivacyNoteOpen.value = open || isPrivacyNoteHovered.value;
+}
+
 async function handleCopyTranscript() {
   const success = await copyContent(formatPlainText(store.displaySegments));
   if (!success) {
@@ -1422,6 +1451,7 @@ onUnmounted(() => {
     void liveRecordingMp3Export.cancel();
   else void liveRecordingMp3Export.release();
   audioSeekCoordinator.cancelPendingSeek();
+  clearTimeout(privacyNoteCloseTimer);
   modelManager.abort();
   if (transcriptCopiedTimeoutId !== null) {
     window.clearTimeout(transcriptCopiedTimeoutId);
@@ -2252,12 +2282,35 @@ onUnmounted(() => {
                     <Mic class="h-4 w-4" />
                     Record live audio instead
                   </button>
-                  <span
-                    class="flex items-center gap-1.5 text-xs text-muted-foreground"
+                  <Popover
+                    :open="isPrivacyNoteOpen"
+                    @update:open="handlePrivacyNoteOpenChange"
                   >
-                    <Lock class="h-3.5 w-3.5 shrink-0" />
-                    Stays on this device
-                  </span>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        class="flex cursor-pointer items-center gap-1.5 rounded-sm text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        @pointerenter="handlePrivacyNotePointerEnter"
+                        @pointerleave="handlePrivacyNotePointerLeave"
+                      >
+                        <ShieldCheck class="h-3.5 w-3.5 shrink-0" />
+                        Nothing leaves this device
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      class="w-64 text-xs leading-relaxed"
+                      align="end"
+                      @open-auto-focus.prevent
+                      @pointerenter="handlePrivacyNotePointerEnter"
+                      @pointerleave="handlePrivacyNotePointerLeave"
+                    >
+                      <p>
+                        Your audio is transcribed right here on your device, not
+                        on a server. Recordings and transcripts are saved only
+                        here, too.
+                      </p>
+                    </PopoverContent>
+                  </Popover>
                 </div>
 
                 <!-- Recent transcripts -->
