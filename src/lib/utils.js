@@ -26,3 +26,7 @@ export function formatDate(dateString) {
     minute: "2-digit",
   }).format(date);
 }
+
+export function formatVersion(version) {
+  return version.replace(/(\.0)?\.0$/, "");
+}
