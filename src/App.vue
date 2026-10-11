@@ -4,6 +4,7 @@ import { RouterView } from "vue-router";
 import { Toaster, useToast } from "@/components/ui/toast";
 import { APP_NAME, APP_VERSION } from "@/lib/config.js";
 import { formatVersion } from "@/lib/utils.js";
+import AppChangelog from "@/app/AppChangelog.vue";
 
 const { toast } = useToast();
 provide("toast", toast);
@@ -52,7 +53,7 @@ provide("toast", toast);
           >Jin</a
         >
       </span>
-      <span class="font-mono">v{{ formatVersion(APP_VERSION) }}</span>
+      <AppChangelog :version="formatVersion(APP_VERSION)" />
     </footer>
     <Toaster />
   </div>
