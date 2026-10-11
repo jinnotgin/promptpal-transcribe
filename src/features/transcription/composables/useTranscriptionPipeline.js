@@ -9,7 +9,10 @@ import {
   getCommittedPcmView,
 } from "@/features/transcription/lib/audioWindowing.js";
 import { createWaveformAccumulator } from "@/features/transcription/lib/waveformAccumulator.js";
-import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import {
+  normalizeTranscriptionLanguage,
+  selectTranscriptionEngines,
+} from "@/features/transcription/lib/engineSelection.js";
 import { ref } from "vue";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
@@ -66,14 +69,20 @@ export function useTranscriptionPipeline(store) {
   }
 
   /**
-   * Engines for this run; reprocessing may override speaker identification.
+   * Engines for this run; reprocessing may override speaker identification
+   * and keeps the language the recording was made with.
    * @param {boolean} enableDiarization
+   * @param {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} [language]
    */
-  function selectEngines(enableDiarization) {
+  function selectEngines(
+    enableDiarization,
+    language = store.transcriptionLanguage,
+  ) {
     return selectTranscriptionEngines({
       speakerMode: enableDiarization ? (store.speakerScale ?? "group") : "solo",
       runtime: store.effectiveRuntime,
       speakerCount: store.speakerCount,
+      language: normalizeTranscriptionLanguage(language),
     });
   }
 
@@ -157,7 +166,7 @@ export function useTranscriptionPipeline(store) {
         });
       const [audioSession] = await Promise.all([
         audioSessionPromise,
-        asr.initialize(runtime),
+        asr.initialize(runtime, selection.asr),
       ]);
       const duration = audioSession.duration;
       store.fileDuration = duration;
@@ -292,6 +301,7 @@ export function useTranscriptionPipeline(store) {
           offset: window.readStart,
           windowIndex: window.index,
           totalWindows: window.total,
+          speech: detected.speech,
         });
         logWindowDiagnostics("asr", window, asrStartedAt, {
           segmentCount: windowRows.length,
@@ -449,7 +459,7 @@ export function useTranscriptionPipeline(store) {
    * decoded through the existing bounded window contract.
    * @param {string} transcriptId
    * @param {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} manifestValue
-   * @param {{ enableDiarization?: boolean }} [options]
+   * @param {{ enableDiarization?: boolean, language?: import('@/features/transcription/lib/engineSelection').TranscriptionLanguage }} [options]
    */
   async function reprocessFromManifest(
     transcriptId,
@@ -459,7 +469,7 @@ export function useTranscriptionPipeline(store) {
     const manifest = normalizeTranscriptAudioManifest(manifestValue);
     const enableDiarization = options.enableDiarization ?? true;
     const runtime = store.effectiveRuntime;
-    const selection = selectEngines(enableDiarization);
+    const selection = selectEngines(enableDiarization, options.language);
     const startTime = Date.now();
     store.clearProcessingState();
     store.segments = [];
@@ -471,7 +481,7 @@ export function useTranscriptionPipeline(store) {
     try {
       store.processPhase = "checking-cache";
       await modelManager.checkCache(selection.assetKeys);
-      await asr.initialize(runtime);
+      await asr.initialize(runtime, selection.asr);
       if (selection.diarization) {
         await modelManager.ensureDiarizationModel(selection.assetKeys);
       }
@@ -509,6 +519,7 @@ export function useTranscriptionPipeline(store) {
                 offset: part.start + window.readStart,
                 windowIndex: globalWindowIndex,
                 totalWindows,
+                speech: detected.speech,
               });
               transcriptRows = asr.mergeSegments([...transcriptRows, ...rows]);
               store.setSegments(transcriptRows);

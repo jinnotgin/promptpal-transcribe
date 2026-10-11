@@ -1,7 +1,10 @@
 /**
  * Chooses the ASR and diarization models for a transcription request.
  *
- *   - ASR: Parakeet fp16 on WebGPU, int8 on WASM.
+ *   - English ASR: Parakeet fp16 on WebGPU, int8 on WASM.
+ *   - Chinese/English ASR: SenseVoice-Small int8 on WASM on every runtime
+ *     (its quantized ops have no WebGPU kernel). Mandarin, English and
+ *     code-switching between them; Parakeet has no Chinese.
  *   - Groups of up to 8 speakers: Nemotron 3 Diarization int8 (120 MB) on
  *     WebGPU or WASM. int8 matches fp32 accuracy on real meetings; the
  *     smaller 4-bit q4f16 export merges speakers.
@@ -13,7 +16,8 @@
 
 /**
  * @typedef {'solo' | 'group' | 'large'} SpeakerMode
- * @typedef {{ engine: 'parakeet', variant: 'fp16' | 'int8' }} AsrSelection
+ * @typedef {'en' | 'zh-en'} TranscriptionLanguage
+ * @typedef {{ engine: 'parakeet', variant: 'fp16' | 'int8' } | { engine: 'sensevoice', variant: 'int8' }} AsrSelection
  * @typedef {{ engine: 'nemotron', variant: 'int8', maxSpeakers: 8 } | { engine: 'sherpa', variant: 'campplus', numSpeakers: number }} DiarizationSelection
  * @typedef {{
  *   asr: AsrSelection,
@@ -35,7 +39,19 @@ const PARAKEET_ASSETS = {
   fp16: ["encoderFp16", "decoder", "vocab"],
   int8: ["encoderInt8", "decoder", "vocab"],
 };
+const SENSEVOICE_ASSETS = ["senseVoiceInt8", "senseVoiceTokens"];
 const NEMOTRON_ASSETS = ["nemotronInt8", "nemotronInt8Data"];
+
+/** @type {readonly TranscriptionLanguage[]} */
+export const TRANSCRIPTION_LANGUAGES = Object.freeze(["en", "zh-en"]);
+
+/**
+ * @param {unknown} value
+ * @returns {TranscriptionLanguage}
+ */
+export function normalizeTranscriptionLanguage(value) {
+  return value === "zh-en" ? "zh-en" : "en";
+}
 const SHERPA_ASSETS = ["sherpaSegmentation", "sherpaEmbedding"];
 
 /**
@@ -56,6 +72,7 @@ export function clampLargeGroupSpeakers(count) {
  *   speakerMode: SpeakerMode,
  *   runtime: 'webgpu' | 'wasm',
  *   speakerCount?: number,
+ *   language?: TranscriptionLanguage,
  * }} request
  * @returns {EngineSelection}
  */
@@ -63,12 +80,13 @@ export function selectTranscriptionEngines({
   speakerMode,
   runtime,
   speakerCount,
+  language = "en",
 }) {
   /** @type {AsrSelection} */
-  const asr = {
-    engine: "parakeet",
-    variant: runtime === "webgpu" ? "fp16" : "int8",
-  };
+  const asr =
+    language === "zh-en"
+      ? { engine: "sensevoice", variant: "int8" }
+      : { engine: "parakeet", variant: runtime === "webgpu" ? "fp16" : "int8" };
   /** @type {DiarizationSelection | null} */
   const diarization =
     speakerMode === "large"
@@ -85,7 +103,9 @@ export function selectTranscriptionEngines({
     asr,
     diarization,
     assetKeys: [
-      ...PARAKEET_ASSETS[asr.variant],
+      ...(asr.engine === "sensevoice"
+        ? SENSEVOICE_ASSETS
+        : PARAKEET_ASSETS[asr.variant]),
       ...(!diarization
         ? []
         : diarization.engine === "sherpa"

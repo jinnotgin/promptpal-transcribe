@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockMic;
 let mockCaptureOptions;
+const asrMocks = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  processChunk: vi.fn(),
+}));
 
 vi.mock("./useModelManager.js", () => ({
   useModelManager: () => ({ checkCache: vi.fn().mockResolvedValue(undefined) }),
@@ -9,9 +13,9 @@ vi.mock("./useModelManager.js", () => ({
 
 vi.mock("./useAsrInference.js", () => ({
   useAsrInference: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: asrMocks.initialize,
     cleanup: vi.fn(),
-    processChunk: vi.fn().mockResolvedValue([]),
+    processChunk: asrMocks.processChunk,
   }),
 }));
 
@@ -29,7 +33,9 @@ vi.mock("@/lib/eventSignals.js", () => ({
 const { useLivePipeline } = await import("./useLivePipeline.js");
 
 class MockWorker {
+  static instances = [];
   constructor() {
+    MockWorker.instances.push(this);
     this.onmessage = null;
     this.onerror = null;
   }
@@ -98,6 +104,9 @@ function createStore() {
 describe("useLivePipeline microphone switching", () => {
   beforeEach(() => {
     vi.stubGlobal("Worker", MockWorker);
+    MockWorker.instances = [];
+    asrMocks.initialize.mockResolvedValue(undefined);
+    asrMocks.processChunk.mockResolvedValue([]);
     mockMic = {
       start: vi.fn(async () => {}),
       pause: vi.fn(),
@@ -242,5 +251,65 @@ describe("useLivePipeline microphone switching", () => {
 
     expect(store.micInputState).toBe("interrupted");
     expect(store.micInputError).toMatchObject({ code: "MIC_SWITCH_FAILED" });
+  });
+
+  it("transcribes Chinese/English with SenseVoice in utterance-sized chunks", async () => {
+    const store = createStore();
+    store.transcriptionLanguage = "zh-en";
+    mockMic.start.mockImplementation(async () => {
+      store.isListening = true;
+    });
+    const pipeline = useLivePipeline(store);
+    await pipeline.start();
+
+    expect(asrMocks.initialize).toHaveBeenCalledWith("wasm", {
+      engine: "sensevoice",
+      variant: "int8",
+    });
+
+    // 20 s of unbroken speech must not reach SenseVoice as one chunk.
+    const utterance = new Float32Array(16000 * 20).fill(0.1);
+    MockWorker.instances.at(-1).onmessage({
+      data: {
+        type: "speech-end",
+        utterance: utterance.buffer,
+        start: 30,
+        end: 50,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(asrMocks.processChunk.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    const calls = asrMocks.processChunk.mock.calls;
+    expect(calls[0][1]).toBe(30);
+    for (const [audio] of calls) {
+      expect(audio.length).toBeLessThanOrEqual(16000 * 12);
+    }
+  });
+
+  it("keeps Parakeet whole-utterance transcription for English", async () => {
+    const store = createStore();
+    mockMic.start.mockImplementation(async () => {
+      store.isListening = true;
+    });
+    const pipeline = useLivePipeline(store);
+    await pipeline.start();
+    expect(asrMocks.initialize).toHaveBeenCalledWith("wasm", {
+      engine: "parakeet",
+      variant: "int8",
+    });
+
+    const utterance = new Float32Array(16000 * 20);
+    MockWorker.instances.at(-1).onmessage({
+      data: {
+        type: "speech-end",
+        utterance: utterance.buffer,
+        start: 0,
+        end: 20,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(asrMocks.processChunk).toHaveBeenCalledOnce(),
+    );
   });
 });

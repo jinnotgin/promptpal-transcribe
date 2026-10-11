@@ -3,6 +3,13 @@ import { computed } from "vue";
 import { CheckCircle2, Download, Circle } from "lucide-vue-next";
 
 const props = defineProps({
+  /** The speech-to-text engine the current language setting uses. */
+  asrEngine: {
+    type: /** @type {import('vue').PropType<'parakeet' | 'sensevoice'>} */ (
+      String
+    ),
+    default: "parakeet",
+  },
   /** The diarizer the current speaker setting uses. */
   diarizationEngine: {
     type: /** @type {import('vue').PropType<'nemotron' | 'sherpa'>} */ (String),
@@ -14,6 +21,18 @@ const props = defineProps({
   parakeetIndeterminate: { type: Boolean, default: false },
   diarizationLoadProgress: { type: Number, default: 0 },
 });
+
+const asrModel = computed(() =>
+  props.asrEngine === "sensevoice"
+    ? {
+        name: "SenseVoice Small",
+        href: "https://huggingface.co/FunAudioLLM/SenseVoiceSmall",
+      }
+    : {
+        name: "NVIDIA Parakeet TDT v3",
+        href: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      },
+);
 
 const parakeetStatus = computed(() => {
   if (props.parakeetCached) return "cached";
@@ -72,11 +91,11 @@ function statusColor(status) {
         <p class="text-xs text-foreground">
           <span class="font-medium">STT model:</span>
           <a
-            href="https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"
+            :href="asrModel.href"
             target="_blank"
             rel="noopener noreferrer"
             class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >NVIDIA Parakeet TDT v3</a
+            >{{ asrModel.name }}</a
           >
         </p>
       </div>

@@ -72,7 +72,12 @@ import TranscriptionDropZone from "@/features/transcription/components/Transcrip
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
 import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
-import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import TranscriptionLanguageOptions from "@/features/transcription/components/TranscriptionLanguageOptions.vue";
+import {
+  normalizeTranscriptionLanguage,
+  selectTranscriptionEngines,
+} from "@/features/transcription/lib/engineSelection.js";
+import { splitTextIntoWords } from "@/features/transcription/lib/wordText.js";
 import TranscriptionProgressPanel from "@/features/transcription/components/TranscriptionProgressPanel.vue";
 import BrowserAdvisoryBanner from "@/features/transcription/components/BrowserAdvisoryBanner.vue";
 import LiveMicrophonePanel from "@/features/transcription/components/LiveMicrophonePanel.vue";
@@ -248,6 +253,15 @@ const prefetchModelProgress = computed(() => {
     PREFETCH_TOTAL_ASSET_COUNT
   );
 });
+const prefetchAsrEngine = computed(() =>
+  store.transcriptionLanguage === "zh-en" ? "sensevoice" : "parakeet",
+);
+/**
+ * Language of the transcript on screen: the setting when a run starts, or
+ * the saved record's. Saved with the record and reused when reprocessing.
+ * @type {import('vue').Ref<import('@/features/transcription/lib/engineSelection').TranscriptionLanguage>}
+ */
+const activeTranscriptLanguage = ref(store.transcriptionLanguage);
 const prefetchDiarizationEngine = computed(() =>
   store.speakerScale === "large" ? "sherpa" : "nemotron",
 );
@@ -376,6 +390,7 @@ function prefetchAssetKeys() {
     speakerMode: store.speakerScale,
     runtime: store.effectiveRuntime,
     speakerCount: store.speakerCount,
+    language: store.transcriptionLanguage,
   }).assetKeys;
 }
 
@@ -394,8 +409,8 @@ onMounted(async () => {
 
   // After cache state is known, start background model pre-download once
   // runtime detection resolves so the worker starts from cache on first use.
-  // Switching between up to 8 and more than 8 speakers re-runs it for the
-  // other diarizer.
+  // Switching between up to 8 and more than 8 speakers, or between English
+  // and Chinese/English, re-runs it for the other model.
   async function startPrefetch() {
     if (prefetchPromise.value) return;
     const assetKeys = prefetchAssetKeys();
@@ -413,10 +428,10 @@ onMounted(async () => {
     );
   }
   watch(
-    () => store.speakerScale,
+    () => [store.speakerScale, store.transcriptionLanguage],
     async () => {
       if (!store.detectedRuntime || store.isProcessing) return;
-      // Replace a prefetch for the previous diarizer's models.
+      // Replace a prefetch for the previous setting's models.
       const pending = prefetchPromise.value;
       if (pending) {
         modelManager.abort();
@@ -560,6 +575,7 @@ async function handleStartTranscription() {
     }
   }
   if (startToken !== transcriptionStartToken) return;
+  activeTranscriptLanguage.value = store.transcriptionLanguage;
   const pendingTranscriptId = generateRecordId();
   await pipeline.start({ transcriptId: pendingTranscriptId });
   if (store.processPhase === "complete" && !store.segments.length) {
@@ -624,6 +640,7 @@ async function persistTranscriptRecord(options = {}) {
         hasReprocessedLiveRecording:
           options.hasReprocessedLiveRecording ??
           hasReprocessedLiveRecording.value,
+        language: activeTranscriptLanguage.value,
         audioManifest: options.audioManifest ?? activeAudioManifest.value,
         audioFileName: options.audioFileName ?? store.fileName,
         audioMimeType:
@@ -673,6 +690,9 @@ async function hydrateFromRecord(record) {
   try {
     store.clearFile();
     activeTranscriptId.value = record.id;
+    activeTranscriptLanguage.value = normalizeTranscriptionLanguage(
+      record.language,
+    );
     activeAudioManifest.value = record.audioManifest ?? null;
     activeAudioPartIndex.value = 0;
     let playbackBlob = null;
@@ -877,6 +897,7 @@ async function handleStartLive() {
     }
   }
   if (startToken !== liveStartToken) return;
+  activeTranscriptLanguage.value = store.transcriptionLanguage;
   pendingLiveTranscriptId.value = generateRecordId();
   await livePipeline.start({ transcriptId: pendingLiveTranscriptId.value });
   await microphoneDevices.refreshMicrophones();
@@ -978,6 +999,7 @@ async function handleReprocess() {
       activeAudioManifest.value,
       {
         enableDiarization: true,
+        language: activeTranscriptLanguage.value,
       },
     );
   } finally {
@@ -1126,7 +1148,7 @@ function segmentWords(segment) {
       text: normalizeDisplayedWord(word.text),
     }));
   }
-  const words = segment.text.trim().split(/\s+/).filter(Boolean);
+  const words = splitTextIntoWords(segment.text);
   if (!words.length) return [];
   const duration = Math.max(0.01, segment.end - segment.start);
   const step = duration / words.length;
@@ -2110,6 +2132,7 @@ onUnmounted(() => {
       <div v-if="!store.isProcessing" class="absolute right-5 top-5 z-20">
         <TranscriptionSettingsPanel
           :execution-env="store.executionEnv"
+          :asr-engine="prefetchAsrEngine"
           :diarization-engine="prefetchDiarizationEngine"
           :effective-runtime="store.effectiveRuntime"
           :is-processing="store.isProcessing"
@@ -2163,7 +2186,7 @@ onUnmounted(() => {
                   v-if="!store.file"
                   class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
                 >
-                  English only
+                  English and Chinese
                 </span>
               </div>
             </div>
@@ -2191,8 +2214,14 @@ onUnmounted(() => {
                 >
                   {{ preflightWarning }}
                 </div>
-                <SpeakerIdentificationOptions
+                <TranscriptionLanguageOptions
                   class="mt-8"
+                  :language="store.transcriptionLanguage"
+                  :disabled="store.isProcessing"
+                  @update:language="store.setTranscriptionLanguage($event)"
+                />
+                <SpeakerIdentificationOptions
+                  class="mt-3"
                   :enabled="store.enableDiarization"
                   :scale="store.speakerScale"
                   :count="store.speakerCount"
@@ -2372,6 +2401,12 @@ onUnmounted(() => {
                 <ChevronLeft class="h-4 w-4" />
                 Back
               </button>
+              <TranscriptionLanguageOptions
+                class="mx-auto mb-3 max-w-md"
+                :language="store.transcriptionLanguage"
+                :disabled="isAwaitingPrefetch"
+                @update:language="store.setTranscriptionLanguage($event)"
+              />
               <LiveMicrophonePanel
                 :is-model-loading="isAwaitingPrefetch"
                 :model-load-progress="store.parakeetLoadProgress"

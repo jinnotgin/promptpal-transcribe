@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import {
   splitIntoChunks,
+  splitIntoUtteranceChunks,
   extractChunkAudio,
 } from "@/features/transcription/lib/chunkingStrategy.js";
 import {
@@ -25,6 +26,8 @@ export function useAsrInference(store) {
   let asrDiagnostics = [];
   /** @type {Set<(reason?: unknown) => void>} */
   const pendingRejections = new Set();
+  /** @type {import('@/features/transcription/lib/engineSelection').AsrSelection['engine']} */
+  let engine = "parakeet";
 
   /**
    * Initialize the ASR worker, downloading and loading model files.
@@ -32,18 +35,26 @@ export function useAsrInference(store) {
    * call; this function only updates `parakeetLoadProgress` so phase does not
    * jump backwards once transcription has started.
    * @param {'webgpu' | 'wasm'} runtime
+   * @param {import('@/features/transcription/lib/engineSelection').AsrSelection} [asrSelection]
+   *   defaults to Parakeet; SenseVoice (Chinese/English) always runs on WASM
    * @returns {Promise<void>}
    */
-  function initialize(runtime) {
+  function initialize(runtime, asrSelection) {
     rejectPending(new DOMException("Superseded", "AbortError"));
     cleanup();
+    engine = asrSelection?.engine ?? "parakeet";
     return new Promise((resolve, reject) => {
-      const currentWorker = new Worker(
-        new URL("@/workers/asrWorker.js", import.meta.url),
-        {
-          type: "module",
-        },
-      );
+      const currentWorker =
+        engine === "sensevoice"
+          ? new Worker(
+              new URL("@/workers/senseVoiceWorker.js", import.meta.url),
+              {
+                type: "module",
+              },
+            )
+          : new Worker(new URL("@/workers/asrWorker.js", import.meta.url), {
+              type: "module",
+            });
       worker = currentWorker;
       const assetProgress = new Map();
       const rejectRequest = (reason) => {
@@ -95,14 +106,23 @@ export function useAsrInference(store) {
 
       currentWorker.postMessage({
         type: "init",
-        payload: {
-          runtime,
-          assetKeys: {
-            encoder: runtime === "webgpu" ? "encoderFp16" : "encoderInt8",
-            decoder: "decoder",
-            vocab: "vocab",
-          },
-        },
+        payload:
+          engine === "sensevoice"
+            ? {
+                runtime: "wasm",
+                assetKeys: {
+                  model: "senseVoiceInt8",
+                  tokens: "senseVoiceTokens",
+                },
+              }
+            : {
+                runtime,
+                assetKeys: {
+                  encoder: runtime === "webgpu" ? "encoderFp16" : "encoderInt8",
+                  decoder: "decoder",
+                  vocab: "vocab",
+                },
+              },
       });
     });
   }
@@ -203,7 +223,9 @@ export function useAsrInference(store) {
    * model worker for later windows.
    * @param {Float32Array} pcm
    * @param {Array<{ start: number, end: number, preChunked?: boolean }>} speechRegions
-   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number }} [options]
+   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number, speech?: Array<{ start: number, end: number }> }} [options]
+   *   `speech`: raw VAD utterances; SenseVoice chunks follow them because it
+   *   degrades on long input
    */
   async function transcribeWindow(pcm, speechRegions, options = {}) {
     if (!worker) {
@@ -214,9 +236,15 @@ export function useAsrInference(store) {
     const offset = Number(options.offset || 0);
     const windowIndex = Number(options.windowIndex || 0);
     const totalWindows = Math.max(1, Number(options.totalWindows || 1));
-    const chunks = splitIntoChunks(speechRegions, {
-      audioDuration: pcm.length / 16000,
-    });
+    const chunks =
+      engine === "sensevoice"
+        ? splitIntoUtteranceChunks(
+            options.speech?.length ? options.speech : speechRegions,
+            pcm,
+          )
+        : splitIntoChunks(speechRegions, {
+            audioDuration: pcm.length / 16000,
+          });
     /** @type {Array<{ chunk: import('@/features/transcription/lib/chunkingStrategy').AsrChunk, segments: import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[] }>} */
     const chunkResults = [];
 

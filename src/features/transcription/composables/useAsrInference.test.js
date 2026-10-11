@@ -5,7 +5,10 @@ class FakeAsrWorker {
   static instances = [];
   static autoRespond = true;
 
-  constructor() {
+  /** @param {URL | string} url */
+  constructor(url) {
+    this.url = String(url);
+    this.messages = [];
     this.listeners = new Set();
     this.onerror = null;
     this.terminated = false;
@@ -21,6 +24,7 @@ class FakeAsrWorker {
   }
 
   postMessage(message) {
+    this.messages.push(message);
     if (!FakeAsrWorker.autoRespond) return;
     queueMicrotask(() => {
       if (message.type === "init") this.emit({ type: "ready" });
@@ -190,6 +194,67 @@ describe("useAsrInference window sessions", () => {
       ]),
     ).resolves.toHaveLength(1);
     expect(FakeAsrWorker.instances).toHaveLength(2);
+    asr.cleanup();
+  });
+
+  it("starts the SenseVoice worker with its assets for Chinese/English", async () => {
+    const asr = useAsrInference(
+      /** @type {any} */ ({ isCancelled: false, updateProgress: vi.fn() }),
+    );
+    await asr.initialize("webgpu", { engine: "sensevoice", variant: "int8" });
+
+    const [worker] = FakeAsrWorker.instances;
+    expect(worker.url).toContain("senseVoiceWorker");
+    expect(worker.messages[0]).toEqual({
+      type: "init",
+      payload: {
+        runtime: "wasm",
+        assetKeys: { model: "senseVoiceInt8", tokens: "senseVoiceTokens" },
+      },
+    });
+    asr.cleanup();
+  });
+
+  it("starts the Parakeet worker by default", async () => {
+    const asr = useAsrInference(
+      /** @type {any} */ ({ isCancelled: false, updateProgress: vi.fn() }),
+    );
+    await asr.initialize("webgpu");
+    expect(FakeAsrWorker.instances[0].url).toContain("asrWorker");
+    expect(FakeAsrWorker.instances[0].messages[0].payload.assetKeys).toEqual({
+      encoder: "encoderFp16",
+      decoder: "decoder",
+      vocab: "vocab",
+    });
+    asr.cleanup();
+  });
+
+  it("feeds SenseVoice short utterance chunks built from raw speech", async () => {
+    const asr = useAsrInference(
+      /** @type {any} */ ({
+        isCancelled: false,
+        enableDiarization: true,
+        updateProgress: vi.fn(),
+      }),
+    );
+    await asr.initialize("wasm", { engine: "sensevoice", variant: "int8" });
+
+    await asr.transcribeWindow(
+      new Float32Array(16000 * 12),
+      [{ start: 0, end: 12, preChunked: true }],
+      {
+        offset: 100,
+        speech: [
+          { start: 0.5, end: 2 },
+          { start: 10, end: 11 },
+        ],
+      },
+    );
+
+    const starts = FakeAsrWorker.instances[0].messages
+      .filter((message) => message.type === "process")
+      .map((message) => message.payload.chunkStart);
+    expect(starts).toEqual([100.3, 109.8]);
     asr.cleanup();
   });
 });

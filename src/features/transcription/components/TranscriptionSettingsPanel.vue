@@ -19,6 +19,12 @@ import TranscriptionModelStatus from "./TranscriptionModelStatus.vue";
 
 const props = defineProps({
   executionEnv: { type: String, required: true },
+  asrEngine: {
+    type: /** @type {import('vue').PropType<'parakeet' | 'sensevoice'>} */ (
+      String
+    ),
+    default: "parakeet",
+  },
   diarizationEngine: {
     type: /** @type {import('vue').PropType<'nemotron' | 'sherpa'>} */ (String),
     default: "nemotron",
@@ -57,6 +63,7 @@ const runtimeDisplay = computed(() => {
         <div class="space-y-2">
           <Label class="text-xs">Models</Label>
           <TranscriptionModelStatus
+            :asr-engine="asrEngine"
             :diarization-engine="diarizationEngine"
             :parakeet-cached="parakeetCached"
             :diarization-cached="diarizationCached"

@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   checkCache: vi.fn(),
   ensureDiarizationModel: vi.fn(),
   diarizationInit: vi.fn(),
+  asrInit: vi.fn(),
+  transcribeWindow: vi.fn(),
 }));
 
 vi.mock(
@@ -86,7 +88,11 @@ vi.mock("./useVoiceActivityDetection.js", () => ({
     detectWindow: vi.fn(async (pcm) => {
       if (mocks.vadCalls === 0) expect(mocks.prepared).toEqual([0, 1]);
       mocks.vadCalls += 1;
-      return { regions: [{ start: 0, end: 1, preChunked: true }], pcm };
+      return {
+        regions: [{ start: 0, end: 1, preChunked: true }],
+        speech: [{ start: 0.2, end: 0.8 }],
+        pcm,
+      };
     }),
     detect: vi.fn(),
     abort: vi.fn(),
@@ -95,17 +101,8 @@ vi.mock("./useVoiceActivityDetection.js", () => ({
 
 vi.mock("./useAsrInference.js", () => ({
   useAsrInference: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
-    transcribeWindow: vi.fn(async (_pcm, _regions, options) => [
-      {
-        id: `segment-${options.windowIndex}`,
-        text: `window ${options.windowIndex}`,
-        start: options.offset,
-        end: options.offset + 1,
-        speaker: null,
-        words: [],
-      },
-    ]),
+    initialize: mocks.asrInit,
+    transcribeWindow: mocks.transcribeWindow,
     mergeSegments: vi.fn((segments) => segments),
     finalizeSegments: vi.fn(async (segments) => segments),
     cleanup: vi.fn(),
@@ -178,6 +175,50 @@ describe("useTranscriptionPipeline uploaded media", () => {
     mocks.checkCache.mockResolvedValue(undefined);
     mocks.ensureDiarizationModel.mockResolvedValue(undefined);
     mocks.diarizationInit.mockResolvedValue(undefined);
+    mocks.asrInit.mockResolvedValue(undefined);
+    mocks.transcribeWindow.mockImplementation(
+      async (_pcm, _regions, options) => [
+        {
+          id: `segment-${options.windowIndex}`,
+          text: `window ${options.windowIndex}`,
+          start: options.offset,
+          end: options.offset + 1,
+          speaker: null,
+          words: [],
+        },
+      ],
+    );
+  });
+
+  it("transcribes Chinese/English with SenseVoice over raw VAD utterances", async () => {
+    const store = makeStore();
+    store.transcriptionLanguage = "zh-en";
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.checkCache).toHaveBeenCalledWith([
+      "senseVoiceInt8",
+      "senseVoiceTokens",
+    ]);
+    expect(mocks.asrInit).toHaveBeenCalledWith("wasm", {
+      engine: "sensevoice",
+      variant: "int8",
+    });
+    expect(mocks.transcribeWindow.mock.calls[0][2]).toMatchObject({
+      speech: [{ start: 0.2, end: 0.8 }],
+    });
+    expect(store.processPhase).toBe("complete");
+  });
+
+  it("uses Parakeet for English", async () => {
+    const store = makeStore();
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.asrInit).toHaveBeenCalledWith("wasm", {
+      engine: "parakeet",
+      variant: "int8",
+    });
   });
 
   it("uses one bounded pipeline for every window and prepares only one look-ahead", async () => {

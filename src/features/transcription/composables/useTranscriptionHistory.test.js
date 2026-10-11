@@ -76,6 +76,15 @@ describe("useTranscriptionHistory", () => {
     expect("audioBlob" in full).toBe(false);
   });
 
+  it("round-trips the transcription language", async () => {
+    const history = useTranscriptionHistory();
+    const id = await history.saveTranscript(makeEntry({ language: "zh-en" }));
+    expect((await history.loadTranscript(id))?.language).toBe("zh-en");
+
+    const legacyId = await history.saveTranscript(makeEntry());
+    expect((await history.loadTranscript(legacyId))?.language).toBe("en");
+  });
+
   it("persists manifest metadata without duplicating new audio in the payload", async () => {
     const history = useTranscriptionHistory();
     const id = "manifest-record";

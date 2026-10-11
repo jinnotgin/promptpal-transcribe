@@ -63,4 +63,21 @@ describe("speaker identification settings", () => {
     expect(store.speakerScale).toBe("group");
     expect(store.speakerCount).toBe(10);
   });
+
+  it("persists the transcription language and picks SenseVoice for Chinese/English", () => {
+    const store = useTranscriptionStore();
+    expect(store.transcriptionLanguage).toBe("en");
+    store.setTranscriptionLanguage("zh-en");
+    expect(store.engineSelection.asr).toEqual({
+      engine: "sensevoice",
+      variant: "int8",
+    });
+
+    setActivePinia(createPinia());
+    expect(useTranscriptionStore().transcriptionLanguage).toBe("zh-en");
+
+    localStorage.setItem("transcription-language", "klingon");
+    setActivePinia(createPinia());
+    expect(useTranscriptionStore().transcriptionLanguage).toBe("en");
+  });
 });

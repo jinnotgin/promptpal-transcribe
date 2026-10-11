@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LARGE_GROUP_SPEAKERS,
   clampLargeGroupSpeakers,
+  normalizeTranscriptionLanguage,
   selectTranscriptionEngines,
 } from "./engineSelection.js";
 
@@ -67,6 +68,55 @@ describe("selectTranscriptionEngines", () => {
         speakerCount: 3,
       }).diarization,
     ).toMatchObject({ numSpeakers: LARGE_GROUP_SPEAKERS.min });
+  });
+});
+
+describe("language selection", () => {
+  it("uses SenseVoice for Chinese/English on every runtime", () => {
+    for (const runtime of /** @type {const} */ (["webgpu", "wasm"])) {
+      expect(
+        selectTranscriptionEngines({
+          speakerMode: "solo",
+          runtime,
+          language: "zh-en",
+        }),
+      ).toMatchObject({
+        asr: { engine: "sensevoice", variant: "int8" },
+        assetKeys: ["senseVoiceInt8", "senseVoiceTokens"],
+      });
+    }
+  });
+
+  it("pairs SenseVoice with the chosen diarizer", () => {
+    expect(
+      selectTranscriptionEngines({
+        speakerMode: "group",
+        runtime: "webgpu",
+        language: "zh-en",
+      }).assetKeys,
+    ).toEqual([
+      "senseVoiceInt8",
+      "senseVoiceTokens",
+      "nemotronInt8",
+      "nemotronInt8Data",
+    ]);
+  });
+
+  it("defaults to Parakeet for English", () => {
+    expect(
+      selectTranscriptionEngines({
+        speakerMode: "solo",
+        runtime: "webgpu",
+        language: "en",
+      }).asr,
+    ).toEqual({ engine: "parakeet", variant: "fp16" });
+  });
+
+  it("normalizes stored values, falling back to English", () => {
+    expect(normalizeTranscriptionLanguage("zh-en")).toBe("zh-en");
+    expect(normalizeTranscriptionLanguage("en")).toBe("en");
+    expect(normalizeTranscriptionLanguage(undefined)).toBe("en");
+    expect(normalizeTranscriptionLanguage("fr")).toBe("en");
   });
 });
 

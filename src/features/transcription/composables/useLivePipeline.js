@@ -8,6 +8,10 @@ import {
   mergeAdjacentSegments,
 } from "@/features/transcription/lib/timestampStitching.js";
 import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import {
+  extractChunkAudio,
+  splitIntoUtteranceChunks,
+} from "@/features/transcription/lib/chunkingStrategy.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
 import { SYSTEM_DEFAULT_MIC_ID } from "@/features/transcription/composables/useMicrophoneDevices.js";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
@@ -37,6 +41,8 @@ export function useLivePipeline(store) {
   let pausedAt = 0;
   let totalPausedMs = 0;
   let utteranceQueue = Promise.resolve();
+  /** @type {import('@/features/transcription/lib/engineSelection').AsrSelection['engine']} */
+  let asrEngine = "parakeet";
 
   const audioManifest = ref(
     /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null} */ (
@@ -93,10 +99,14 @@ export function useLivePipeline(store) {
         : null;
       store.processPhase = "checking-cache";
       // Live transcription does not identify speakers.
-      await modelManager.checkCache(
-        selectTranscriptionEngines({ speakerMode: "solo", runtime }).assetKeys,
-      );
-      await asr.initialize(runtime);
+      const selection = selectTranscriptionEngines({
+        speakerMode: "solo",
+        runtime,
+        language: store.transcriptionLanguage,
+      });
+      asrEngine = selection.asr.engine;
+      await modelManager.checkCache(selection.assetKeys);
+      await asr.initialize(runtime, selection.asr);
 
       if (store.isCancelled) throw abortError();
 
@@ -344,11 +354,39 @@ export function useLivePipeline(store) {
     }
   }
 
+  /**
+   * SenseVoice degrades on long input, so unbroken speech is cut at its
+   * quietest points into utterance-sized chunks; Parakeet takes it whole.
+   * @param {Float32Array} audio
+   * @param {number} uttStart
+   */
+  async function transcribeUtteranceAudio(audio, uttStart) {
+    if (asrEngine !== "sensevoice") {
+      return asr.processChunk(audio, uttStart, 0, 1);
+    }
+    const chunks = splitIntoUtteranceChunks(
+      [{ start: 0, end: audio.length / 16000 }],
+      audio,
+    );
+    const segments = [];
+    for (const [index, chunk] of chunks.entries()) {
+      segments.push(
+        ...(await asr.processChunk(
+          extractChunkAudio(audio, chunk),
+          uttStart + chunk.start,
+          index,
+          chunks.length,
+        )),
+      );
+    }
+    return segments;
+  }
+
   async function transcribeUtterance(audio, uttStart, uttEnd) {
     if (store.isCancelled || !store.isListening) return;
 
     try {
-      const rawSegments = await asr.processChunk(audio, uttStart, 0, 1);
+      const rawSegments = await transcribeUtteranceAudio(audio, uttStart);
       if (!rawSegments.length) return;
 
       const merged = mergeAdjacentSegments(

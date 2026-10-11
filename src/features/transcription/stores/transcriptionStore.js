@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import {
   clampLargeGroupSpeakers,
+  normalizeTranscriptionLanguage,
   selectTranscriptionEngines,
 } from "@/features/transcription/lib/engineSelection.js";
 import {
@@ -18,6 +19,7 @@ import {
 const STORAGE_KEY_ENV = "transcription-env";
 const STORAGE_KEY_SPEAKER_SCALE = "transcription-speaker-scale";
 const STORAGE_KEY_SPEAKER_COUNT = "transcription-speaker-count";
+const STORAGE_KEY_LANGUAGE = "transcription-language";
 
 export const useTranscriptionStore = defineStore("transcription", {
   state: () => ({
@@ -25,6 +27,10 @@ export const useTranscriptionStore = defineStore("transcription", {
     /** @type {ExecutionEnv} */
     executionEnv: parseExecutionEnv(localStorage.getItem(STORAGE_KEY_ENV)),
     enableDiarization: true,
+    /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} "zh-en" uses SenseVoice instead of Parakeet */
+    transcriptionLanguage: normalizeTranscriptionLanguage(
+      localStorage.getItem(STORAGE_KEY_LANGUAGE),
+    ),
     /** @type {SpeakerScale} "large" uses the clustering diarizer for more than 8 speakers */
     speakerScale: parseSpeakerScale(
       localStorage.getItem(STORAGE_KEY_SPEAKER_SCALE),
@@ -126,6 +132,7 @@ export const useTranscriptionStore = defineStore("transcription", {
         speakerMode: this.enableDiarization ? this.speakerScale : "solo",
         runtime: this.effectiveRuntime,
         speakerCount: this.speakerCount,
+        language: this.transcriptionLanguage,
       });
     },
 
@@ -305,6 +312,12 @@ export const useTranscriptionStore = defineStore("transcription", {
     setSpeakerScale(scale) {
       this.speakerScale = parseSpeakerScale(scale);
       localStorage.setItem(STORAGE_KEY_SPEAKER_SCALE, this.speakerScale);
+    },
+
+    /** @param {string} language */
+    setTranscriptionLanguage(language) {
+      this.transcriptionLanguage = normalizeTranscriptionLanguage(language);
+      localStorage.setItem(STORAGE_KEY_LANGUAGE, this.transcriptionLanguage);
     },
 
     /** @param {number} count */
