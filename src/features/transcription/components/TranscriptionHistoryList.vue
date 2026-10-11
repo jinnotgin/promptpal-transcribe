@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import ConfirmDestructiveButton from "@/components/ConfirmDestructiveButton.vue";
 import { formatDate } from "@/lib/utils.js";
+import { isLiveTranscript } from "@/features/transcription/lib/transcriptSource.js";
 
 const props = defineProps({
   records: {
@@ -107,7 +108,7 @@ function formatDuration(seconds) {
           <span
             class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 text-muted-foreground"
           >
-            <Mic v-if="record.isLiveRecording" class="h-4 w-4" />
+            <Mic v-if="isLiveTranscript(record)" class="h-4 w-4" />
             <FileAudio v-else class="h-4 w-4" />
           </span>
           <span class="min-w-0 flex-1">
@@ -118,7 +119,7 @@ function formatDuration(seconds) {
                 {{ record.fileName || "Untitled transcript" }}
               </span>
               <span
-                v-if="record.isLiveRecording"
+                v-if="isLiveTranscript(record)"
                 class="shrink-0 rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
               >
                 Live

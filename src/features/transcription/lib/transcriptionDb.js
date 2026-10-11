@@ -4,6 +4,7 @@ import {
   buildSummary,
   generateRecordId,
 } from "@/features/transcription/lib/transcriptHistoryRecords.js";
+import { inferLegacyLiveRecording } from "@/features/transcription/lib/transcriptSource.js";
 
 /**
  * This app was forked from the PromptPal project and later renamed, so new
@@ -150,6 +151,33 @@ export const createTranscriptionDb = (name = TRANSCRIPTION_DB_NAME) => {
         .modify((payload) => {
           delete payload.audioBlob;
         });
+    });
+
+  // v5: the live flag is the only runtime source signal. Backfill it once from
+  // each payload's audio manifest so file names never decide it at runtime.
+  db.version(5)
+    .stores({
+      transcripts: "&id, createdAt",
+      transcriptPayloads: "&id",
+      transcriptAudioFragments:
+        "[transcriptId+partIndex+fragmentIndex], transcriptId, [transcriptId+partIndex]",
+      modelCache: "&cacheKey",
+    })
+    .upgrade(async (tx) => {
+      const payloads = tx.table("transcriptPayloads");
+      const summaries = await tx.table("transcripts").toArray();
+      const payloadRows = await payloads.bulkGet(
+        summaries.map((summary) => summary.id),
+      );
+      await tx.table("transcripts").bulkPut(
+        summaries.map((summary, index) => ({
+          ...summary,
+          isLiveRecording: inferLegacyLiveRecording(
+            summary,
+            payloadRows[index],
+          ),
+        })),
+      );
     });
 
   return db;

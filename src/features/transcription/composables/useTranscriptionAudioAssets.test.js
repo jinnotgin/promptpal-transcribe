@@ -239,7 +239,7 @@ describe("useTranscriptionAudioAssets", () => {
     await owner.finishStaging("stale-session");
   });
 
-  it("keeps the transcription database on schema version 4", () => {
-    expect(db.verno).toBe(4);
+  it("keeps the transcription database on schema version 5", () => {
+    expect(db.verno).toBe(5);
   });
 });

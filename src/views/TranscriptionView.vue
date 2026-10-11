@@ -60,6 +60,7 @@ import { useTranscriptionHistory } from "@/features/transcription/composables/us
 import { useTranscriptionAudioAssets } from "@/features/transcription/composables/useTranscriptionAudioAssets.js";
 import { useLiveRecordingMp3Export } from "@/features/transcription/composables/useLiveRecordingMp3Export.js";
 import { generateRecordId } from "@/features/transcription/lib/transcriptHistoryRecords.js";
+import { isLiveTranscript } from "@/features/transcription/lib/transcriptSource.js";
 import { isChromeBrowser } from "@/features/transcription/lib/hardwareCapabilities.js";
 import { APP_NAME } from "@/lib/config.js";
 import { copyContent, formatDate } from "@/lib/utils.js";
@@ -733,10 +734,7 @@ async function hydrateFromRecord(record) {
       ? URL.createObjectURL(playbackBlob)
       : null;
     if (record.audioManifest?.parts?.[1]) void prefetchAudioPart(1);
-    isLiveRecordingResult.value =
-      Boolean(record.isLiveRecording) ||
-      record.audioFileName === "live-recording" ||
-      /^Live Recording\b/.test(record.fileName || record.audioFileName || "");
+    isLiveRecordingResult.value = isLiveTranscript(record);
     hasReprocessedLiveRecording.value = Boolean(
       record.hasReprocessedLiveRecording,
     );

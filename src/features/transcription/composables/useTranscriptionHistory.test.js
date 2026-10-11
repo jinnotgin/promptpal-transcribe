@@ -331,6 +331,6 @@ describe("useTranscriptionHistory", () => {
     expect(full.segments[0].text).toBe("legacy words");
     expect(full.speakerNames["Speaker 1"]).toBe("Legacy");
     expect("audioBlob" in full).toBe(false);
-    expect(db.verno).toBe(4);
+    expect(db.verno).toBe(5);
   });
 });
