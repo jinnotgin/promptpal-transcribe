@@ -8,6 +8,7 @@
 
 import { fromUrls } from "parakeet.js";
 import { getOrDownloadModelAsset } from "@/features/transcription/lib/modelCache.js";
+import { wordsToSegments } from "@/features/transcription/lib/asrWordSegments.js";
 
 const SAMPLE_RATE = 16000;
 
@@ -160,65 +161,6 @@ function normalizeParakeetWords(words, utteranceId, chunkStart) {
     });
   }
   return dedupeDecodedWords(normalized);
-}
-
-/**
- * @param {Array<{ text: string, start: number, end: number, confidence?: number, utteranceId?: number }>} words
- * @param {string} fallbackText
- * @param {number} chunkStart
- * @param {number} chunkDuration
- */
-function wordsToSegments(words, fallbackText, chunkStart, chunkDuration) {
-  if (!words.length) {
-    const text = fallbackText.replace(/\s+/g, " ").trim();
-    return text
-      ? [
-          {
-            text,
-            start: roundTime(chunkStart),
-            end: roundTime(chunkStart + chunkDuration),
-            words: [],
-          },
-        ]
-      : [];
-  }
-
-  const segments = [];
-  let current = null;
-  for (const word of words) {
-    const shouldStartNew =
-      !current ||
-      current.words.length >= 16 ||
-      word.start - current.end > 0.9 ||
-      word.end - current.start > 8;
-    if (shouldStartNew) {
-      if (current) segments.push(finalizeSegment(current));
-      current = { words: [word], start: word.start, end: word.end };
-    } else {
-      current.words.push(word);
-      current.end = word.end;
-    }
-  }
-  if (current) segments.push(finalizeSegment(current));
-  return segments;
-}
-
-/**
- * @param {{ words: Array<{ text: string, start: number, end: number, confidence?: number, utteranceId?: number }>, start: number, end: number }} segment
- */
-function finalizeSegment(segment) {
-  return {
-    text: segment.words.map((word) => word.text).join(" "),
-    start: roundTime(segment.start),
-    end: roundTime(segment.end),
-    words: segment.words.map((word) => ({
-      text: word.text,
-      start: roundTime(word.start),
-      end: roundTime(word.end),
-      confidence: word.confidence,
-      utteranceId: word.utteranceId,
-    })),
-  };
 }
 
 /**
