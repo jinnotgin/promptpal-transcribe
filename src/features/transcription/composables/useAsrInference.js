@@ -270,7 +270,8 @@ export function useAsrInference(store) {
    * Regions carry absolute times and an optional 1-based speaker id.
    * @param {Float32Array} pcm
    * @param {Array<{ start: number, end: number, speakerId: number | null }>} regions
-   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number }} [options]
+   * @param {{ offset?: number, windowIndex?: number, totalWindows?: number, onRegion?: (region: { start: number, end: number }, rows: import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]) => void }} [options]
+   *   `onRegion` receives each region's rows, e.g. to align them later
    */
   async function transcribeRegions(pcm, regions, options = {}) {
     if (!worker) {
@@ -291,15 +292,15 @@ export function useAsrInference(store) {
         end: region.end - offset,
         regionIndex: index,
       });
-      rows.push(
-        ...(await processChunk(
-          audio,
-          region.start,
-          windowIndex * Math.max(1, regions.length) + index,
-          totalWindows * Math.max(1, regions.length),
-          region.speakerId ? speakerLabelForId(region.speakerId) : null,
-        )),
+      const regionRows = await processChunk(
+        audio,
+        region.start,
+        windowIndex * Math.max(1, regions.length) + index,
+        totalWindows * Math.max(1, regions.length),
+        region.speakerId ? speakerLabelForId(region.speakerId) : null,
       );
+      options.onRegion?.(region, regionRows);
+      rows.push(...regionRows);
     }
     return rows;
   }

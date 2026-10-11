@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   vadCalls: 0,
   events: /** @type {string[]} */ ([]),
   regionCalls: /** @type {any[]} */ ([]),
+  alignFails: false,
+  alignedPcmLengths: /** @type {number[]} */ ([]),
 }));
 
 vi.mock(
@@ -43,6 +45,7 @@ vi.mock("./useModelManager.js", () => ({
   useModelManager: () => ({
     checkCache: vi.fn().mockResolvedValue(undefined),
     ensureDiarizationModel: vi.fn().mockResolvedValue(undefined),
+    ensureModelsReady: vi.fn().mockResolvedValue(undefined),
     abort: vi.fn(),
   }),
 }));
@@ -100,14 +103,18 @@ vi.mock("./useAsrInference.js", () => ({
     }),
     transcribeRegions: vi.fn(async (_pcm, regions, options) => {
       mocks.regionCalls.push({ regions, options });
-      return regions.map((region, index) => ({
-        id: `qwen-${options.windowIndex}-${index}`,
-        text: "你好。",
-        start: region.start,
-        end: region.end,
-        speaker: region.speakerId ? `Speaker ${region.speakerId}` : null,
-        words: [],
-      }));
+      return regions.map((region, index) => {
+        const row = {
+          id: `qwen-${options.windowIndex}-${index}`,
+          text: "你好。",
+          start: region.start,
+          end: region.end,
+          speaker: region.speakerId ? `Speaker ${region.speakerId}` : null,
+          words: [],
+        };
+        options.onRegion?.(region, [row]);
+        return row;
+      });
     }),
     transcribeWindow: vi.fn(async (_pcm, _regions, options) => [
       {
@@ -121,7 +128,31 @@ vi.mock("./useAsrInference.js", () => ({
     ]),
     mergeSegments: vi.fn((segments) => segments),
     finalizeSegments: vi.fn(async (segments) => segments),
-    cleanup: vi.fn(),
+    cleanup: vi.fn(() => mocks.events.push("asr-cleanup")),
+    abort: vi.fn(),
+  }),
+}));
+
+vi.mock("./useForcedAlignment.js", () => ({
+  useForcedAlignment: () => ({
+    initialize: vi.fn(async () => {
+      mocks.events.push("aligner-init");
+    }),
+    alignRegion: vi.fn(async (pcm, job) => {
+      mocks.events.push(`align:${job.start}`);
+      mocks.alignedPcmLengths.push(pcm.length);
+      if (mocks.alignFails) throw new Error("WebGPU out of memory");
+      return [
+        {
+          text: job.text,
+          start: job.start + 0.2,
+          end: job.end - 0.1,
+          speaker: job.speaker,
+          words: [{ text: "你", start: job.start + 0.2, end: job.start + 0.5 }],
+        },
+      ];
+    }),
+    cleanup: vi.fn(() => mocks.events.push("aligner-cleanup")),
     abort: vi.fn(),
   }),
 }));
@@ -173,6 +204,8 @@ describe("useTranscriptionPipeline uploaded media", () => {
     mocks.vadCalls = 0;
     mocks.events = [];
     mocks.regionCalls = [];
+    mocks.alignFails = false;
+    mocks.alignedPcmLengths = [];
     mocks.continuousSupported = true;
     vi.clearAllMocks();
     mocks.assertStorageHeadroom.mockResolvedValue(undefined);
@@ -239,15 +272,53 @@ describe("useTranscriptionPipeline uploaded media", () => {
       "diarization-window",
       "diarization-turns",
       "asr-init:qwen3-asr",
+      "asr-cleanup",
+      "aligner-init",
+      "align:0",
+      "aligner-cleanup",
     ]);
     // Each mocked window is 1 s of PCM, so only window 0 has committed speech.
     expect(mocks.regionCalls).toHaveLength(1);
     expect(mocks.regionCalls[0].regions).toEqual([
       { start: 0, end: 1, speakerId: 2 },
     ]);
+    expect(mocks.alignedPcmLengths).toEqual([16000]);
     expect(store.segments).toEqual([
-      expect.objectContaining({ text: "你好。", speaker: "Speaker 2" }),
+      expect.objectContaining({
+        text: "你好。",
+        speaker: "Speaker 2",
+        start: 0.2,
+        words: [{ text: "你", start: 0.2, end: 0.5 }],
+      }),
     ]);
+    expect(store.processPhase).toBe("complete");
+  });
+
+  it("keeps proportional Chinese timings when alignment fails", async () => {
+    mocks.alignFails = true;
+    const store = makeStore();
+    store.language = "zh";
+    store.effectiveRuntime = "webgpu";
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.events).toContain("aligner-cleanup");
+    expect(store.segments).toEqual([
+      expect.objectContaining({ text: "你好。", start: 0, end: 1 }),
+    ]);
+    expect(store.processPhase).toBe("complete");
+  });
+
+  it("uses the large-group diarizer with the chosen speaker count", async () => {
+    const store = makeStore();
+    store.enableDiarization = true;
+    store.speakerScale = "large";
+    store.speakerCount = 12;
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.events).toContain("diarization-init:sherpa");
+    expect(mocks.events).not.toContain("aligner-init");
     expect(store.processPhase).toBe("complete");
   });
 

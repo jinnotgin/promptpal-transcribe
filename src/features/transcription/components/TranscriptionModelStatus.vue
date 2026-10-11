@@ -48,6 +48,14 @@ const MODEL_LINKS = {
     name: "NVIDIA Nemotron 3 Diarization",
     href: "https://huggingface.co/nvidia/Nemotron-3-Diarization",
   },
+  sherpa: {
+    name: "sherpa-onnx pyannote + CAM++",
+    href: "https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/index.html",
+  },
+  "qwen3-forced-aligner": {
+    name: "Qwen3-ForcedAligner 0.6B",
+    href: "https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B",
+  },
   sortformer: {
     name: "NVIDIA Sortformer v2.1",
     href: "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1",
@@ -56,6 +64,9 @@ const MODEL_LINKS = {
 
 const asrModel = computed(
   () => MODEL_LINKS[props.selection?.asr.engine ?? "parakeet"],
+);
+const alignerModel = computed(() =>
+  props.selection?.aligner ? MODEL_LINKS[props.selection.aligner.engine] : null,
 );
 const diarizerModel = computed(
   () => MODEL_LINKS[props.selection?.diarization?.engine ?? "nemotron"],
@@ -91,6 +102,16 @@ function statusColor(status) {
             rel="noopener noreferrer"
             class="ml-2 break-words text-primary underline-offset-2 hover:underline"
             >{{ asrModel.name }}</a
+          >
+        </p>
+        <p v-if="alignerModel" class="text-xs text-foreground">
+          <span class="font-medium">Word timing:</span>
+          <a
+            :href="alignerModel.href"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="ml-2 break-words text-primary underline-offset-2 hover:underline"
+            >{{ alignerModel.name }}</a
           >
         </p>
       </div>

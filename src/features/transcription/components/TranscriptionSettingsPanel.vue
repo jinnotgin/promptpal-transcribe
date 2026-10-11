@@ -118,7 +118,8 @@ const runtimeDisplay = computed(() => {
             </SelectContent>
           </Select>
           <p class="text-xs text-muted-foreground">
-            Chinese transcripts always use Nemotron 3.
+            Applies to Group. Chinese always uses Nemotron 3; Large group always
+            uses speaker clustering.
           </p>
         </div>
 

@@ -20,6 +20,16 @@ describe("transcription progress stage model", () => {
     ]);
   });
 
+  it("adds word alignment last for Chinese transcripts", () => {
+    expect(createProgressStages(true, true).map((stage) => stage.key)).toEqual([
+      "downloading-model",
+      "transcribing",
+      "diarizing",
+      "aligning",
+    ]);
+    expect(getProgressStageKey("aligning")).toBe("aligning");
+  });
+
   it.each(["transcoding", "vad", "transcribing"])(
     "keeps the internal %s phase within Transcribing",
     (phase) => {

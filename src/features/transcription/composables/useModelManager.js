@@ -55,17 +55,23 @@ export function useModelManager(store) {
    * Download a single model asset with progress reporting.
    * @param {string} assetKey
    * @param {AbortSignal} signal
-   * @returns {Promise<ArrayBuffer>}
+   * Streams into the cache without keeping the bytes on the main thread;
+   * workers read their models back from the cache.
    */
   async function downloadAsset(
     assetKey,
     signal,
     onAssetProgress = reportAssetProgress,
   ) {
-    return await getOrDownloadModelAsset(assetKey, signal, ({ percent }) => {
-      if (percent != null) onAssetProgress(assetKey, percent);
-      else store.parakeetLoadIndeterminate = true;
-    });
+    await getOrDownloadModelAsset(
+      assetKey,
+      signal,
+      ({ percent }) => {
+        if (percent != null) onAssetProgress(assetKey, percent);
+        else store.parakeetLoadIndeterminate = true;
+      },
+      { keepBytes: false },
+    );
   }
 
   /**
@@ -175,18 +181,25 @@ export function useModelManager(store) {
         progressByKey.set(key, 100);
         continue;
       }
-      await getOrDownloadModelAsset(key, signal, (progress) => {
-        store.processPhase =
-          progress.source === "cache"
-            ? "loading-diarization-model"
-            : "downloading-diarization-model";
-        if (progress.percent != null) {
-          progressByKey.set(key, progress.percent);
-          store.sortformerLoadProgress =
-            [...progressByKey.values()].reduce((sum, value) => sum + value, 0) /
-            progressByKey.size;
-        }
-      });
+      await getOrDownloadModelAsset(
+        key,
+        signal,
+        (progress) => {
+          store.processPhase =
+            progress.source === "cache"
+              ? "loading-diarization-model"
+              : "downloading-diarization-model";
+          if (progress.percent != null) {
+            progressByKey.set(key, progress.percent);
+            store.sortformerLoadProgress =
+              [...progressByKey.values()].reduce(
+                (sum, value) => sum + value,
+                0,
+              ) / progressByKey.size;
+          }
+        },
+        { keepBytes: false },
+      );
     }
     store.sortformerLoadProgress = 100;
     store.sortformerCached = true;

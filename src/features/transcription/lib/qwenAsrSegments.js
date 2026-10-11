@@ -7,6 +7,8 @@
  * never joined with English-style spaces.
  */
 
+import { splitAlignerUnits } from "./qwenAlignerText.js";
+
 /**
  * @typedef {import('./transcriptionDb.js').TranscriptSegment} TranscriptSegment
  */
@@ -60,6 +62,84 @@ export function buildTimedSegments(text, { start, end, speaker }) {
       words,
     };
   });
+}
+
+/**
+ * Segments with real timings from Qwen3-ForcedAligner. Display words are the
+ * aligner units (one per CJK character, one per Latin word) carrying the
+ * punctuation that follows them; sentences end where a unit carries
+ * sentence-final punctuation.
+ * @param {string} text
+ * @param {Array<{ start: number, end: number }>} times one per aligner unit
+ * @param {{ speaker: string | null }} options
+ * @returns {Omit<TranscriptSegment, 'id'>[]}
+ */
+export function buildAlignedSegments(text, times, { speaker }) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const units = splitAlignerUnits(clean);
+  if (units.length !== times.length) {
+    throw new Error(
+      `Aligner returned ${times.length} timings for ${units.length} units`,
+    );
+  }
+  /** @type {Omit<TranscriptSegment, 'id'>[]} */
+  const segments = [];
+  let sentenceFrom = 0;
+  /** @type {Array<{ text: string, start: number, end: number }>} */
+  let words = [];
+  units.forEach((unit, index) => {
+    const from = index === 0 ? 0 : unit.start;
+    const to = index + 1 < units.length ? units[index + 1].start : clean.length;
+    const display = clean.slice(from, to);
+    words.push({
+      text: display.trim(),
+      start: round(times[index].start),
+      end: round(Math.max(times[index].start, times[index].end)),
+    });
+    if (index + 1 === units.length || endsSentence(display)) {
+      segments.push({
+        text: clean.slice(sentenceFrom, to).trim(),
+        start: words[0].start,
+        end: words[words.length - 1].end,
+        speaker,
+        words,
+      });
+      sentenceFrom = to;
+      words = [];
+    }
+  });
+  return segments;
+}
+
+/**
+ * Same rule as `splitSentences`: CJK/ASCII terminal punctuation, or a final
+ * "." not preceded by a digit.
+ * @param {string} display a unit plus its trailing punctuation
+ */
+function endsSentence(display) {
+  const trimmed = display.trim();
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (char === ".") {
+      if (
+        index === trimmed.length - 1 &&
+        !/\d/.test(trimmed[index - 1] || "")
+      ) {
+        return true;
+      }
+    } else if (SENTENCE_END.test(char)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a display word is Chinese/Japanese text (CJK characters plus
+ * punctuation, no Latin letters or digits), which renders without the gap
+ * placed between Latin words.
+ * @param {string} text
+ */
+export function isCjkDisplayWord(text) {
+  return CJK.test(text) && !/[\p{Script=Latin}\p{N}]/u.test(text);
 }
 
 /**

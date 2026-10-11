@@ -10,8 +10,10 @@ import {
 const props = defineProps({
   phase: { type: String, required: true },
   enableDiarization: { type: Boolean, default: true },
+  enableAlignment: { type: Boolean, default: false },
   transcriptionProgress: { type: Number, default: 0 },
   diarizationProgress: { type: Number, default: 0 },
+  alignmentProgress: { type: Number, default: 0 },
   sortformerLoadProgress: { type: Number, default: 0 },
   cancelable: { type: Boolean, default: true },
 });
@@ -19,7 +21,7 @@ const props = defineProps({
 const emit = defineEmits(["cancel"]);
 
 const stages = computed(() => {
-  return createProgressStages(props.enableDiarization);
+  return createProgressStages(props.enableDiarization, props.enableAlignment);
 });
 
 const currentStageIndex = computed(() => {
@@ -38,6 +40,11 @@ const currentStageDetail = computed(() => {
     return "Downloading speaker model";
   if (props.phase === "loading-diarization-model")
     return "Loading speaker model from cache";
+  if (props.phase === "aligning") {
+    return props.alignmentProgress > 0
+      ? "Aligning word timing"
+      : "Loading the word-timing model";
+  }
   if (props.phase === "diarizing") {
     return props.diarizationProgress > 0
       ? "Identifying speakers"
@@ -68,6 +75,7 @@ const currentProgress = computed(() => {
     "downloading-model": props.transcriptionProgress,
     transcribing: props.transcriptionProgress,
     diarizing: props.diarizationProgress,
+    aligning: props.alignmentProgress,
   };
   return progressMap[currentStage.value?.key] ?? 0;
 });

@@ -73,6 +73,7 @@ import TranscriptionHistoryList from "@/features/transcription/components/Transc
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
 import TranscriptionEngineOptions from "@/features/transcription/components/TranscriptionEngineOptions.vue";
 import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import { isCjkDisplayWord } from "@/features/transcription/lib/qwenAsrSegments.js";
 import TranscriptionProgressPanel from "@/features/transcription/components/TranscriptionProgressPanel.vue";
 import BrowserAdvisoryBanner from "@/features/transcription/components/BrowserAdvisoryBanner.vue";
 import LiveMicrophonePanel from "@/features/transcription/components/LiveMicrophonePanel.vue";
@@ -380,7 +381,7 @@ onMounted(async () => {
 
   // After cache state is known, start background model pre-download once
   // runtime detection resolves so the worker starts from cache on first use.
-  // Switching language re-runs it for the newly selected engines.
+  // Switching language or group size re-runs it for the new engines.
   async function startPrefetch() {
     const selection = store.engineSelection;
     if (!selection.available || prefetchPromise.value) return;
@@ -389,10 +390,11 @@ onMounted(async () => {
       ? selection.assetKeys
       : selectTranscriptionEngines({
           language: store.language,
-          speakerMode: "group",
+          speakerMode: store.speakerScale,
           runtime: store.effectiveRuntime,
           shaderF16: store.shaderF16,
           speakerModel: store.speakerModel,
+          speakerCount: store.speakerCount,
         }).assetKeys;
     await modelManager.checkCache(assetKeys);
     if (store.parakeetCached && store.sortformerCached) return;
@@ -408,10 +410,10 @@ onMounted(async () => {
     );
   }
   watch(
-    () => store.language,
+    () => [store.language, store.speakerScale],
     async () => {
       if (!store.detectedRuntime || store.isProcessing) return;
-      // Replace a prefetch for the previous language's models.
+      // Replace a prefetch for the previous selection's models.
       const pending = prefetchPromise.value;
       if (pending) {
         modelManager.abort();
@@ -1116,10 +1118,10 @@ function isWordActive(word) {
 
 function segmentWords(segment) {
   if (Array.isArray(segment.words) && segment.words.length > 0) {
-    return segment.words.map((word) => ({
-      ...word,
-      text: normalizeDisplayedWord(word.text),
-    }));
+    return segment.words.map((word) => {
+      const text = normalizeDisplayedWord(word.text);
+      return { ...word, text, cjk: isCjkDisplayWord(text) };
+    });
   }
   const words = segment.text.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return [];
@@ -1601,14 +1603,15 @@ onUnmounted(() => {
                     :key="`${seg.id}-${wordIndex}`"
                   >
                     <span
-                      class="mr-[0.08em] inline-block rounded px-0.5"
-                      :class="
+                      class="inline-block rounded"
+                      :class="[
+                        word.cjk ? 'px-0' : 'mr-[0.08em] px-0.5',
                         isWordActive(word)
                           ? 'bg-primary text-primary-foreground'
                           : isSegmentActive(seg)
                             ? 'text-foreground'
-                            : 'text-foreground/80'
-                      "
+                            : 'text-foreground/80',
+                      ]"
                     >
                       {{ word.text }} </span
                     ><wbr />
@@ -1924,7 +1927,8 @@ onUnmounted(() => {
                   <span
                     v-for="(word, wordIndex) in segmentWords(seg)"
                     :key="`${seg.id}-${wordIndex}`"
-                    class="mr-[0.08em] inline-block rounded px-0.5 text-foreground/80"
+                    class="inline-block rounded text-foreground/80"
+                    :class="word.cjk ? 'px-0' : 'mr-[0.08em] px-0.5'"
                   >
                     {{ word.text }}
                   </span>
@@ -2167,7 +2171,7 @@ onUnmounted(() => {
                 <span
                   class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
                 >
-                  Detects up to 8 speakers
+                  Detects up to 8 speakers, or more in large groups
                 </span>
               </div>
             </div>
@@ -2199,6 +2203,8 @@ onUnmounted(() => {
                   class="mt-8"
                   :language="store.language"
                   :enable-diarization="store.enableDiarization"
+                  :speaker-scale="store.speakerScale"
+                  :speaker-count="store.speakerCount"
                   :selection="store.engineSelection"
                   :chinese-available="chineseAvailable"
                   :disabled="store.isProcessing"
@@ -2206,6 +2212,8 @@ onUnmounted(() => {
                   @update:enable-diarization="
                     store.setEnableDiarization($event)
                   "
+                  @update:speaker-scale="store.setSpeakerScale($event)"
+                  @update:speaker-count="store.setSpeakerCount($event)"
                 />
                 <Button
                   class="mt-12 h-10 w-full"
@@ -2383,6 +2391,7 @@ onUnmounted(() => {
                 class="mx-auto mb-4 w-full max-w-md"
                 :language="store.language"
                 :show-speakers="false"
+                :include-aligner="false"
                 :selection="store.engineSelection"
                 :chinese-available="chineseAvailable"
                 @update:language="store.setLanguage($event)"
@@ -2431,8 +2440,10 @@ onUnmounted(() => {
           "
           :phase="store.processPhase"
           :enable-diarization="isReprocessing ? true : store.enableDiarization"
+          :enable-alignment="Boolean(store.engineSelection.aligner)"
           :transcription-progress="store.transcriptionProgress"
           :diarization-progress="store.diarizationProgress"
+          :alignment-progress="store.alignmentProgress"
           :sortformer-load-progress="store.sortformerLoadProgress"
           :cancelable="!isReprocessing"
           @cancel="handleCancel"

@@ -5,6 +5,13 @@
 
 const NEMOTRON_ONNX_BASE =
   "https://huggingface.co/onnx-community/Nemotron-3-Diarization-ONNX/resolve/353b6f8ad2cac3580e982d7fbdf0a010786b0406/onnx";
+const SHERPA_SEGMENTATION_BASE =
+  "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0";
+const SHERPA_EMBEDDING_BASE =
+  "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/0743f301363dec56491a490f6d6cbc9d67f9a3bf";
+// Pinned Apache-2.0 mirror of a community q4 export of Qwen3-ForcedAligner.
+const QWEN_ALIGNER_BASE =
+  "https://huggingface.co/ExNihilus/Qwen3-ForcedAligner-0.6B-ONNX/resolve/5552cf743e4c5360cce67bf613030ab6a1313324";
 const QWEN_ASR_BASE =
   "https://huggingface.co/jiangzhuo9357/Qwen3-ASR-0.6B-ONNX/resolve/4a01b95fafe2c9e3af77e33c18bbb7de349c62f6";
 
@@ -58,6 +65,26 @@ export const MODEL_ASSETS = {
     url: `${NEMOTRON_ONNX_BASE}/model_quantized.onnx_data`,
     cacheKey: "nemotron3-diarization-int8-data",
     runtime: "diarization",
+  },
+  sherpaSegmentation: {
+    url: `${SHERPA_SEGMENTATION_BASE}/model.onnx`,
+    cacheKey: "sherpa-pyannote-segmentation-3.0",
+    runtime: "diarization",
+  },
+  sherpaEmbedding: {
+    url: `${SHERPA_EMBEDDING_BASE}/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx`,
+    cacheKey: "sherpa-campplus-zh-en-advanced",
+    runtime: "diarization",
+  },
+  alignerQ4: {
+    url: `${QWEN_ALIGNER_BASE}/onnx/model_q4.onnx`,
+    cacheKey: "qwen3-forced-aligner-q4",
+    runtime: "webgpu",
+  },
+  alignerMerges: {
+    url: `${QWEN_ALIGNER_BASE}/merges.txt`,
+    cacheKey: "qwen3-forced-aligner-merges",
+    runtime: "webgpu",
   },
   qwenEncoderFp16: qwenAsset("encoder.fp16.onnx", "qwen3-asr-encoder-fp16"),
   qwenEncoderFp32: qwenAsset("encoder.onnx", "qwen3-asr-encoder-fp32"),

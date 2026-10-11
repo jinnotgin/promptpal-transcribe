@@ -168,6 +168,33 @@ function absorbShortTurns(turns, minTurn, minGap) {
   );
 }
 
+/**
+ * Rasterise speaker segments (0-based `speaker`) into a 0/1 activity grid so
+ * segment-based diarizers can reuse the probability helpers above.
+ * @param {Array<{ start: number, end: number, speaker: number }>} segments
+ * @param {{ frameSeconds?: number }} [options]
+ * @returns {SpeakerProbabilities}
+ */
+export function segmentsToProbabilities(segments, options = {}) {
+  const frameSeconds = options.frameSeconds ?? 0.01;
+  const numSpeakers = Math.max(
+    1,
+    ...segments.map((segment) => segment.speaker + 1),
+  );
+  const frames = segments.length
+    ? Math.round(Math.max(...segments.map((s) => s.end)) / frameSeconds)
+    : 0;
+  const probs = new Float32Array(frames * numSpeakers);
+  for (const { start, end, speaker } of segments) {
+    const first = Math.max(0, Math.round(start / frameSeconds));
+    const last = Math.min(frames, Math.round(end / frameSeconds));
+    for (let frame = first; frame < last; frame += 1) {
+      probs[frame * numSpeakers + speaker] = 1;
+    }
+  }
+  return { probs, frames, numSpeakers, frameSeconds };
+}
+
 /** @param {number} value */
 function roundTime(value) {
   return Math.round(value * 1000) / 1000;

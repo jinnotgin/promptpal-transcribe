@@ -212,16 +212,38 @@ export async function clearCachedModels() {
 }
 
 /**
+ * Return a cached model or download it. Downloads are written to the cache
+ * in `chunkBytes` records as they arrive, so a 1 GB model never needs a
+ * second full copy; with `keepBytes: false` (prefetch) only one chunk is
+ * held at a time and nothing is returned.
  * @param {string} assetKey
  * @param {AbortSignal} signal
  * @param {(progress: { assetKey: string, percent: number | null, receivedBytes: number, totalBytes: number | null, source: 'cache' | 'download' }) => void} [onProgress]
- * @returns {Promise<ArrayBuffer>}
+ * @param {{ keepBytes?: boolean, chunkBytes?: number }} [options]
+ * @returns {Promise<ArrayBuffer | null>} null only when `keepBytes` is false
  */
-export async function getOrDownloadModelAsset(assetKey, signal, onProgress) {
+export async function getOrDownloadModelAsset(
+  assetKey,
+  signal,
+  onProgress,
+  options = {},
+) {
   const asset = MODEL_ASSETS[assetKey];
   if (!asset) throw new Error(`Unknown model asset: ${assetKey}`);
+  const keepBytes = options.keepBytes ?? true;
+  const chunkBytes = options.chunkBytes ?? MODEL_CHUNK_BYTES;
 
-  const cached = await getCachedModel(asset.cacheKey);
+  if (!keepBytes && (await hasCachedModel(asset.cacheKey))) {
+    onProgress?.({
+      assetKey,
+      percent: 100,
+      receivedBytes: 0,
+      totalBytes: null,
+      source: "cache",
+    });
+    return null;
+  }
+  const cached = keepBytes ? await getCachedModel(asset.cacheKey) : null;
   if (cached) {
     onProgress?.({
       assetKey,
@@ -248,56 +270,92 @@ export async function getOrDownloadModelAsset(assetKey, signal, onProgress) {
   const totalBytes =
     Number(response.headers.get("content-length") || 0) || null;
   const reader = response.body.getReader();
-  let preallocated = totalBytes ? new Uint8Array(totalBytes) : null;
-  const chunks = [];
+  /** @type {Uint8Array[]} */
+  const kept = [];
+  let chunk = new Uint8Array(chunkBytes);
+  let chunkFill = 0;
+  let chunkCount = 0;
   let receivedBytes = 0;
+  const db = await openTranscriptionModelDb();
+  try {
+    const flushChunk = async () => {
+      const data = chunk.slice(0, chunkFill).buffer;
+      await writeRecord(db, {
+        cacheKey: chunkKey(asset.cacheKey, chunkCount),
+        data,
+      });
+      if (keepBytes) kept.push(new Uint8Array(data));
+      chunkCount += 1;
+      chunkFill = 0;
+    };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (
-      preallocated &&
-      receivedBytes + value.byteLength <= preallocated.byteLength
-    ) {
-      preallocated.set(value, receivedBytes);
-    } else {
-      if (preallocated) {
-        chunks.push(preallocated.subarray(0, receivedBytes));
-        preallocated = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let offset = 0;
+      while (offset < value.byteLength) {
+        const take = Math.min(
+          value.byteLength - offset,
+          chunkBytes - chunkFill,
+        );
+        chunk.set(value.subarray(offset, offset + take), chunkFill);
+        chunkFill += take;
+        offset += take;
+        if (chunkFill === chunkBytes) await flushChunk();
       }
-      chunks.push(value);
+      receivedBytes += value.byteLength;
+      onProgress?.({
+        assetKey,
+        percent: totalBytes
+          ? Math.min(100, (receivedBytes / totalBytes) * 100)
+          : null,
+        receivedBytes,
+        totalBytes,
+        source: "download",
+      });
     }
-    receivedBytes += value.byteLength;
+
+    const downloadedAt = new Date().toISOString();
+    /** @type {ArrayBuffer | null} */
+    let bytes = null;
+    if (chunkCount === 0) {
+      // Small model: one record, as putCachedModel writes it.
+      const data = chunk.slice(0, chunkFill).buffer;
+      await writeRecord(db, {
+        cacheKey: asset.cacheKey,
+        data,
+        downloadedAt,
+        sizeBytes: receivedBytes,
+      });
+      bytes = data;
+    } else {
+      if (chunkFill > 0) await flushChunk();
+      await writeRecord(db, {
+        cacheKey: asset.cacheKey,
+        chunks: chunkCount,
+        downloadedAt,
+        sizeBytes: receivedBytes,
+      });
+      if (keepBytes) {
+        const joined = new Uint8Array(receivedBytes);
+        let offset = 0;
+        for (const part of kept.splice(0)) {
+          joined.set(part, offset);
+          offset += part.byteLength;
+        }
+        bytes = joined.buffer;
+      }
+    }
+    chunk = new Uint8Array(0);
     onProgress?.({
       assetKey,
-      percent: totalBytes ? (receivedBytes / totalBytes) * 100 : null,
+      percent: 100,
       receivedBytes,
-      totalBytes,
+      totalBytes: totalBytes ?? receivedBytes,
       source: "download",
     });
+    return keepBytes ? bytes : null;
+  } finally {
+    db.close();
   }
-
-  let bytes = preallocated
-    ? preallocated.byteLength === receivedBytes
-      ? preallocated
-      : preallocated.slice(0, receivedBytes)
-    : null;
-  if (!bytes) {
-    bytes = new Uint8Array(receivedBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-  }
-
-  await putCachedModel(asset.cacheKey, bytes.buffer, receivedBytes);
-  onProgress?.({
-    assetKey,
-    percent: 100,
-    receivedBytes,
-    totalBytes: totalBytes ?? receivedBytes,
-    source: "download",
-  });
-  return bytes.buffer;
 }

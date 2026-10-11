@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   dominantSpeakerTurns,
   probabilitiesToSpeakerSegments,
+  segmentsToProbabilities,
 } from "./diarizationTurns.js";
 
 /**
@@ -84,5 +85,46 @@ describe("dominantSpeakerTurns", () => {
       ]),
     );
     expect(turns).toEqual([{ id: 1, start: 0, end: 6 }]);
+  });
+});
+
+describe("segmentsToProbabilities", () => {
+  it("rasterises speaker segments into a 10 ms activity grid", () => {
+    const grid = segmentsToProbabilities([
+      { start: 0, end: 0.05, speaker: 1 },
+      { start: 0.03, end: 0.08, speaker: 0 },
+    ]);
+    expect(grid).toMatchObject({
+      frames: 8,
+      numSpeakers: 2,
+      frameSeconds: 0.01,
+    });
+    const active = (/** @type {number} */ speaker) =>
+      Array.from(
+        { length: grid.frames },
+        (_, frame) => grid.probs[frame * 2 + speaker],
+      );
+    expect(active(1)).toEqual([1, 1, 1, 1, 1, 0, 0, 0]);
+    expect(active(0)).toEqual([0, 0, 0, 1, 1, 1, 1, 1]);
+  });
+
+  it("feeds dominant turns for diarize-first ASR", () => {
+    const turns = dominantSpeakerTurns(
+      segmentsToProbabilities([
+        { start: 0.5, end: 4, speaker: 3 },
+        { start: 4.2, end: 9, speaker: 0 },
+      ]),
+    );
+    expect(turns).toEqual([
+      { id: 1, start: 0.5, end: 4 },
+      { id: 2, start: 4.2, end: 9 },
+    ]);
+  });
+
+  it("returns an empty grid for no segments", () => {
+    expect(segmentsToProbabilities([])).toMatchObject({
+      frames: 0,
+      numSpeakers: 1,
+    });
   });
 });

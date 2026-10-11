@@ -54,4 +54,27 @@ describe("transcription engine settings", () => {
     expect(reloaded.language).toBe("zh");
     expect(reloaded.speakerModel).toBe("sortformer");
   });
+
+  it("selects the large-group diarizer with a persisted speaker count", () => {
+    const store = useTranscriptionStore();
+    store.setEnableDiarization(true);
+    expect(store.speakerScale).toBe("group");
+    expect(store.speakerCount).toBe(10);
+    store.setSpeakerScale("large");
+    store.setSpeakerCount(14);
+    expect(store.engineSelection.diarization).toEqual({
+      engine: "sherpa",
+      variant: "campplus",
+      numSpeakers: 14,
+    });
+    store.setSpeakerCount(400);
+    expect(store.speakerCount).toBe(26);
+
+    setActivePinia(createPinia());
+    const reloaded = useTranscriptionStore();
+    expect(reloaded.speakerScale).toBe("large");
+    expect(reloaded.speakerCount).toBe(26);
+    reloaded.setEnableDiarization(false);
+    expect(reloaded.engineSelection.diarization).toBeNull();
+  });
 });

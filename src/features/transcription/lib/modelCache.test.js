@@ -80,6 +80,76 @@ describe("transcription model cache metadata", () => {
     ).toEqual([1, 2, 3]);
   });
 
+  it("streams large downloads into chunk records without keeping the bytes", async () => {
+    const bytes = Uint8Array.from({ length: 10 }, (_, index) => index + 1);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes.subarray(0, 3));
+              controller.enqueue(bytes.subarray(3, 9));
+              controller.enqueue(bytes.subarray(9));
+              controller.close();
+            },
+          }),
+          { status: 200, headers: { "content-length": "10" } },
+        ),
+      ),
+    );
+
+    const result = await getOrDownloadModelAsset(
+      "vocab",
+      new AbortController().signal,
+      undefined,
+      { keepBytes: false, chunkBytes: 4 },
+    );
+
+    expect(result).toBeNull();
+    expect(await rawModelKeys()).toHaveLength(4);
+    expect(
+      Array.from(new Uint8Array(await getCachedModel("parakeet-vocab"))),
+    ).toEqual(Array.from(bytes));
+  });
+
+  it("returns streamed bytes when they are kept", async () => {
+    const bytes = Uint8Array.from({ length: 9 }, (_, index) => index * 3);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(bytes, { status: 200 })),
+    );
+
+    const result = await getOrDownloadModelAsset(
+      "vocab",
+      new AbortController().signal,
+      undefined,
+      { chunkBytes: 4 },
+    );
+
+    expect(Array.from(new Uint8Array(result))).toEqual(Array.from(bytes));
+    expect(
+      Array.from(new Uint8Array(await getCachedModel("parakeet-vocab"))),
+    ).toEqual(Array.from(bytes));
+  });
+
+  it("skips reading a cached model when the bytes are not needed", async () => {
+    await putCachedModel("parakeet-vocab", Uint8Array.of(1, 2).buffer, 2);
+    vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(() => {
+      throw new Error("payload reads are forbidden");
+    });
+    const progress = vi.fn();
+
+    await expect(
+      getOrDownloadModelAsset("vocab", new AbortController().signal, progress, {
+        keepBytes: false,
+      }),
+    ).resolves.toBeNull();
+    expect(progress).toHaveBeenCalledWith(
+      expect.objectContaining({ percent: 100, source: "cache" }),
+    );
+  });
+
   it("stores large models as chunks and reassembles them", async () => {
     const bytes = Uint8Array.from({ length: 10 }, (_, index) => index + 1);
     await putCachedModel("big-model", bytes.buffer, bytes.length, {

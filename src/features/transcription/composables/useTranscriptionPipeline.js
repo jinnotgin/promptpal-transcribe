@@ -3,6 +3,7 @@ import { useAudioPreparation } from "./useAudioPreparation.js";
 import { useVoiceActivityDetection } from "./useVoiceActivityDetection.js";
 import { useAsrInference } from "./useAsrInference.js";
 import { useDiarization } from "./useDiarization.js";
+import { useForcedAlignment } from "./useForcedAlignment.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
 import {
   createAudioWindows,
@@ -11,6 +12,12 @@ import {
 import { createWaveformAccumulator } from "@/features/transcription/lib/waveformAccumulator.js";
 import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import { planQwenRegions } from "@/features/transcription/lib/qwenAsrRegions.js";
+import {
+  alignmentJobForRegion,
+  jobsInWindow,
+  replaceAlignedRows,
+} from "@/features/transcription/lib/alignmentJobs.js";
+import { v4 as uuidv4 } from "uuid";
 import { ref } from "vue";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
@@ -20,6 +27,7 @@ import {
 } from "./useStreamingWebmEncoder.js";
 
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
+const ALIGNER_ASSET_KEYS = ["alignerQ4", "alignerMerges", "qwenVocab"];
 
 /**
  * Top-level orchestrator. Sequences the full transcription pipeline:
@@ -31,7 +39,9 @@ const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
  * Diarization normally runs after ASR and assigns speakers to timestamped
  * words. Qwen3-ASR has no word timestamps, so for Chinese with speaker
  * identification the diarization pass runs first and ASR transcribes regions
- * cut at speaker turns.
+ * cut at speaker turns. Once Qwen3-ASR is unloaded, Qwen3-ForcedAligner
+ * re-reads each region's audio and replaces its proportional timings with
+ * real ones; if alignment fails the proportional timings are kept.
  *
  * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  */
@@ -41,6 +51,8 @@ export function useTranscriptionPipeline(store) {
   const vad = useVoiceActivityDetection();
   const asr = useAsrInference(store);
   const diarization = useDiarization(store);
+  const aligner = useForcedAlignment();
+  const SAMPLE_RATE = 16000;
   const audioAssets = useTranscriptionAudioAssets();
   const audioManifest = ref(
     /** @type {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest | null} */ (
@@ -96,10 +108,11 @@ export function useTranscriptionPipeline(store) {
   function selectEngines(enableDiarization) {
     return selectTranscriptionEngines({
       language: store.language ?? "en",
-      speakerMode: enableDiarization ? "group" : "solo",
+      speakerMode: enableDiarization ? (store.speakerScale ?? "group") : "solo",
       runtime: store.effectiveRuntime,
       shaderF16: Boolean(store.shaderF16),
       speakerModel: store.speakerModel ?? "nemotron",
+      speakerCount: store.speakerCount,
     });
   }
 
@@ -148,6 +161,8 @@ export function useTranscriptionPipeline(store) {
    * @param {number} baseOffset absolute start of the source (manifest part)
    * @param {Array<{ id: number, start: number, end: number }> | null} turns
    * @param {{ windowIndex: number, totalWindows: number }} progress
+   * @param {import('@/features/transcription/lib/alignmentJobs.js').AlignmentJob[]} jobs
+   *   collects each region for the word-alignment pass
    */
   async function transcribeQwenWindow(
     pcm,
@@ -156,6 +171,7 @@ export function useTranscriptionPipeline(store) {
     baseOffset,
     turns,
     progress,
+    jobs,
   ) {
     const planned = planQwenRegions({
       pcm,
@@ -169,7 +185,86 @@ export function useTranscriptionPipeline(store) {
     return await asr.transcribeRegions(pcm, planned, {
       offset: baseOffset + window.readStart,
       ...progress,
+      onRegion: (region, rows) => {
+        const job = alignmentJobForRegion(region, rows);
+        if (job) jobs.push(job);
+      },
     });
+  }
+
+  /**
+   * Re-read committed audio and align each Qwen region's text to it. Runs
+   * after ASR cleanup so Qwen3-ASR and the aligner are never resident
+   * together. Alignment is a refinement: on failure the proportional rows
+   * are kept.
+   * @param {Array<{ windows: ReturnType<typeof createAudioWindows>, offset?: number, open?: () => Promise<void>, close?: () => Promise<void> }>} sources
+   * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} rows
+   * @param {import('@/features/transcription/lib/alignmentJobs.js').AlignmentJob[]} jobs
+   */
+  async function alignQwenRows(sources, rows, jobs) {
+    if (!jobs.length) return rows;
+    store.processPhase = "aligning";
+    store.updateProgress("alignment", 0);
+    /** @type {Array<{ job: import('@/features/transcription/lib/alignmentJobs.js').AlignmentJob, segments: Omit<import('@/features/transcription/lib/transcriptionDb').TranscriptSegment, 'id'>[] }>} */
+    const aligned = [];
+    try {
+      // Stream the ~1 GB model into the cache first so the worker loads it
+      // once from there instead of holding a download copy too.
+      await modelManager.ensureModelsReady(ALIGNER_ASSET_KEYS);
+      await aligner.initialize();
+      for (const source of sources) {
+        const base = source.offset ?? 0;
+        await source.open?.();
+        try {
+          for (const window of source.windows) {
+            const windowJobs = jobsInWindow(
+              jobs,
+              base + window.commitStart,
+              base + window.commitEnd,
+            );
+            if (!windowJobs.length) continue;
+            const pcm = /** @type {Float32Array} */ (
+              await consumePreparation(prepareCommittedWindow(window))
+            );
+            for (const job of windowJobs) {
+              if (store.isCancelled) throw abort();
+              const from = Math.max(
+                0,
+                Math.round(
+                  (job.start - base - window.commitStart) * SAMPLE_RATE,
+                ),
+              );
+              const to = Math.min(
+                pcm.length,
+                Math.round((job.end - base - window.commitStart) * SAMPLE_RATE),
+              );
+              if (to <= from) continue;
+              const segments = await aligner.alignRegion(
+                pcm.subarray(from, to),
+                job,
+              );
+              if (segments?.length) aligned.push({ job, segments });
+              store.updateProgress(
+                "alignment",
+                (aligned.length / jobs.length) * 100,
+              );
+            }
+          }
+        } finally {
+          await source.close?.();
+        }
+      }
+    } catch (error) {
+      if (error?.name === "AbortError" || store.isCancelled) throw error;
+      console.warn(
+        "[transcription] Word alignment failed; keeping estimated timings:",
+        error,
+      );
+      return rows;
+    } finally {
+      aligner.cleanup();
+    }
+    return replaceAlignedRows(rows, aligned, uuidv4);
   }
 
   async function consumePreparation(preparation) {
@@ -293,6 +388,8 @@ export function useTranscriptionPipeline(store) {
           ? prepareUploadWindow(windows[0])
           : prepare(windows[0]);
       let transcriptRows = [];
+      /** @type {import('@/features/transcription/lib/alignmentJobs.js').AlignmentJob[]} */
+      const alignmentJobs = [];
 
       for (let index = 0; index < windows.length; index += 1) {
         const window = windows[index];
@@ -390,6 +487,7 @@ export function useTranscriptionPipeline(store) {
               0,
               speakerTurns,
               { windowIndex: window.index, totalWindows: window.total },
+              alignmentJobs,
             )
           : await asr.transcribeWindow(pcm, detected.regions, {
               offset: window.readStart,
@@ -426,6 +524,15 @@ export function useTranscriptionPipeline(store) {
         }
       }
       asr.cleanup();
+
+      if (usesQwen && selection.aligner) {
+        transcriptRows = await alignQwenRows(
+          [{ windows }],
+          transcriptRows,
+          alignmentJobs,
+        );
+        store.setSegments(transcriptRows);
+      }
 
       if (selection.diarization && !selection.diarizeFirst) {
         if (store.isCancelled) throw abort();
@@ -515,6 +622,7 @@ export function useTranscriptionPipeline(store) {
     vad.abort();
     asr.abort();
     diarization.abort();
+    aligner.abort();
     return new DOMException("Aborted", "AbortError");
   }
 
@@ -563,6 +671,8 @@ export function useTranscriptionPipeline(store) {
       if (store.isCancelled) throw abort();
 
       let transcriptRows = [];
+      /** @type {import('@/features/transcription/lib/alignmentJobs.js').AlignmentJob[]} */
+      const alignmentJobs = [];
       let globalWindowIndex = 0;
       const totalWindows = manifest.parts.reduce(
         (total, part) =>
@@ -571,6 +681,7 @@ export function useTranscriptionPipeline(store) {
       );
       const diarizationSources = manifest.parts.map((part) => ({
         windows: createAudioWindows(part.end - part.start),
+        offset: part.start,
         open: async () => {
           const blob = await audioAssets.getPartBlob(transcriptId, part);
           const file = new File([blob], `transcript-part-${part.index}`, {
@@ -620,6 +731,7 @@ export function useTranscriptionPipeline(store) {
                     part.start,
                     speakerTurns,
                     { windowIndex: globalWindowIndex, totalWindows },
+                    alignmentJobs,
                   )
                 : await asr.transcribeWindow(pcm, detected.regions, {
                     offset: part.start + window.readStart,
@@ -638,6 +750,15 @@ export function useTranscriptionPipeline(store) {
 
       if (!transcriptRows.length) throw new Error("ASR_EMPTY_RESULT");
       asr.cleanup();
+
+      if (usesQwen && selection.aligner) {
+        transcriptRows = await alignQwenRows(
+          diarizationSources,
+          transcriptRows,
+          alignmentJobs,
+        );
+        store.setSegments(transcriptRows);
+      }
 
       if (selection.diarization && !selection.diarizeFirst) {
         store.processPhase = "diarizing";

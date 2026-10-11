@@ -1,5 +1,8 @@
 import { defineStore } from "pinia";
-import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
+import {
+  clampLargeGroupSpeakers,
+  selectTranscriptionEngines,
+} from "@/features/transcription/lib/engineSelection.js";
 import {
   SYSTEM_DEFAULT_MIC_ID,
   createSystemDefaultMic,
@@ -7,15 +10,18 @@ import {
 
 /**
  * @typedef {'auto' | 'webgpu' | 'wasm'} ExecutionEnv
- * @typedef {'idle' | 'checking-cache' | 'downloading-model' | 'loading-model' | 'downloading-diarization-model' | 'loading-diarization-model' | 'transcoding' | 'vad' | 'transcribing' | 'diarizing' | 'complete' | 'error'} ProcessPhase
+ * @typedef {'idle' | 'checking-cache' | 'downloading-model' | 'loading-model' | 'downloading-diarization-model' | 'loading-diarization-model' | 'transcoding' | 'vad' | 'transcribing' | 'diarizing' | 'aligning' | 'complete' | 'error'} ProcessPhase
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment} TranscriptSegment
  * @typedef {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} TranscriptionLanguage
  * @typedef {import('@/features/transcription/lib/engineSelection').SpeakerModel} SpeakerModel
+ * @typedef {'group' | 'large'} SpeakerScale
  */
 
 const STORAGE_KEY_ENV = "transcription-env";
 const STORAGE_KEY_LANGUAGE = "transcription-language";
 const STORAGE_KEY_SPEAKER_MODEL = "transcription-speaker-model";
+const STORAGE_KEY_SPEAKER_SCALE = "transcription-speaker-scale";
+const STORAGE_KEY_SPEAKER_COUNT = "transcription-speaker-count";
 
 export const useTranscriptionStore = defineStore("transcription", {
   state: () => ({
@@ -29,6 +35,14 @@ export const useTranscriptionStore = defineStore("transcription", {
       localStorage.getItem(STORAGE_KEY_SPEAKER_MODEL),
     ),
     enableDiarization: true,
+    /** @type {SpeakerScale} "large" uses the clustering diarizer for more than 8 speakers */
+    speakerScale: parseSpeakerScale(
+      localStorage.getItem(STORAGE_KEY_SPEAKER_SCALE),
+    ),
+    /** Expected number of speakers for a large group. */
+    speakerCount: parseSpeakerCount(
+      localStorage.getItem(STORAGE_KEY_SPEAKER_COUNT),
+    ),
 
     // --- Runtime detection ---
     webgpuAvailable: false,
@@ -75,6 +89,7 @@ export const useTranscriptionStore = defineStore("transcription", {
     // --- Progress (0-100 per phase) ---
     transcriptionProgress: 0,
     diarizationProgress: 0,
+    alignmentProgress: 0,
 
     // --- Model state ---
     parakeetCached: false,
@@ -121,10 +136,11 @@ export const useTranscriptionStore = defineStore("transcription", {
     engineSelection() {
       return selectTranscriptionEngines({
         language: this.language,
-        speakerMode: this.enableDiarization ? "group" : "solo",
+        speakerMode: this.enableDiarization ? this.speakerScale : "solo",
         runtime: this.effectiveRuntime,
         shaderF16: this.shaderF16,
         speakerModel: this.speakerModel,
+        speakerCount: this.speakerCount,
       });
     },
 
@@ -205,11 +221,12 @@ export const useTranscriptionStore = defineStore("transcription", {
       this.isCancelled = false;
       this.transcriptionProgress = 0;
       this.diarizationProgress = 0;
+      this.alignmentProgress = 0;
       this.error = null;
     },
 
     /**
-     * @param {'transcription' | 'diarization'} phase
+     * @param {'transcription' | 'diarization' | 'alignment'} phase
      * @param {number} value 0-100
      */
     updateProgress(phase, value) {
@@ -313,6 +330,21 @@ export const useTranscriptionStore = defineStore("transcription", {
       localStorage.setItem(STORAGE_KEY_SPEAKER_MODEL, this.speakerModel);
     },
 
+    /** @param {SpeakerScale} scale */
+    setSpeakerScale(scale) {
+      this.speakerScale = parseSpeakerScale(scale);
+      localStorage.setItem(STORAGE_KEY_SPEAKER_SCALE, this.speakerScale);
+    },
+
+    /** @param {number} count */
+    setSpeakerCount(count) {
+      this.speakerCount = clampLargeGroupSpeakers(Number(count));
+      localStorage.setItem(
+        STORAGE_KEY_SPEAKER_COUNT,
+        String(this.speakerCount),
+      );
+    },
+
     /** @param {boolean} enabled */
     setEnableDiarization(enabled) {
       this.enableDiarization = enabled;
@@ -410,6 +442,19 @@ function parseLanguage(value) {
  */
 function parseSpeakerModel(value) {
   return value === "sortformer" ? "sortformer" : "nemotron";
+}
+
+/**
+ * @param {string | null} value
+ * @returns {SpeakerScale}
+ */
+function parseSpeakerScale(value) {
+  return value === "large" ? "large" : "group";
+}
+
+/** @param {string | null} value */
+function parseSpeakerCount(value) {
+  return clampLargeGroupSpeakers(value == null ? undefined : Number(value));
 }
 
 /**

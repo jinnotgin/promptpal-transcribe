@@ -26,14 +26,27 @@ export function useDiarization(store) {
             new URL("@/workers/diarizationWorker.js", import.meta.url),
             { type: "module" },
           )
-        : new Worker(
-            new URL("@/workers/nemotronDiarizationWorker.js", import.meta.url),
-            { type: "module" },
-          );
+        : selection.engine === "sherpa"
+          ? new Worker(
+              new URL("@/workers/sherpaDiarizationWorker.js", import.meta.url),
+              { type: "module" },
+            )
+          : new Worker(
+              new URL(
+                "@/workers/nemotronDiarizationWorker.js",
+                import.meta.url,
+              ),
+              { type: "module" },
+            );
     worker.onmessage = handleMessage;
     worker.onerror = handleWorkerError;
     worker.onmessageerror = handleMessageError;
-    await request("init", { runtime });
+    await request(
+      "init",
+      selection.engine === "sherpa"
+        ? { runtime, numSpeakers: selection.numSpeakers }
+        : { runtime },
+    );
   }
 
   /**

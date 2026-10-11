@@ -137,6 +137,27 @@ describe("useDiarization window sessions", () => {
     );
   });
 
+  it("runs the sherpa worker with the requested speaker count", async () => {
+    const diarization = useDiarization(
+      /** @type {any} */ ({
+        updateProgress: vi.fn(),
+        sortformerLoadProgress: 0,
+      }),
+    );
+    await diarization.initialize("webgpu", {
+      engine: "sherpa",
+      variant: "campplus",
+      numSpeakers: 12,
+    });
+    const worker = FakeDiarizationWorker.instances[0];
+    expect(worker.url).toContain("sherpaDiarizationWorker");
+    expect(worker.messages[0]).toMatchObject({
+      type: "init",
+      payload: { runtime: "webgpu", numSpeakers: 12 },
+    });
+    diarization.abort();
+  });
+
   it("returns speaker turns for diarize-first transcription", async () => {
     const diarization = useDiarization(
       /** @type {any} */ ({
