@@ -9,6 +9,7 @@
 import { computeQwenAsrFeatures } from "./qwenAsrFeatures.js";
 import {
   QWEN_ASR_EOS_IDS,
+  QWEN_ASR_HEADER_KEYWORD_ID,
   QWEN_ASR_LANGUAGE_PREFIX_IDS,
   buildQwenAsrPrompt,
   parseQwenAsrOutput,
@@ -27,8 +28,12 @@ import {
  * @typedef {'zh' | 'en' | 'yue'} QwenLanguage
  */
 
-/** A run this long of one token is a decoding loop, not speech. */
-const REPEAT_LIMIT = 16;
+/** A repeating tail this many tokens long is a decoding loop, not speech. */
+const LOOP_TOKENS = 16;
+/** Longest repeating token pattern checked, e.g. "Okay." plus a space. */
+const MAX_LOOP_PERIOD = 8;
+/** Fewest pattern repeats that count as a loop, for long patterns. */
+const MIN_LOOP_REPEATS = 4;
 
 /**
  * Token budget: ~8 tokens/s covers fast Mandarin and English speech, with a
@@ -45,22 +50,27 @@ export function qwenMaxNewTokens(seconds) {
  *   model: QwenAsrModel,
  *   decoder: { decode: (ids: ArrayLike<number>) => string },
  *   language?: QwenLanguage | null,
- *   fallbackLanguage?: QwenLanguage | null,
  *   maxNewTokens?: number,
- * }} options
- * @returns {Promise<{ text: string, language: string | null, tokens: number[], forcedLanguage: QwenLanguage | null }>}
+ * }} options `language` forces the whole header; leave it unset for
+ *   code-switched speech so the model is never pushed to translate
+ * @returns {Promise<{ text: string, language: string | null, tokens: number[], forcedLanguage: QwenLanguage | null, headerForced: boolean }>}
  */
 export async function generateQwenTranscript({
   pcm,
   model,
   decoder,
   language = null,
-  fallbackLanguage = null,
   maxNewTokens,
 }) {
   const { features, frames } = computeQwenAsrFeatures(pcm);
   if (!frames)
-    return { text: "", language: null, tokens: [], forcedLanguage: null };
+    return {
+      text: "",
+      language: null,
+      tokens: [],
+      forcedLanguage: null,
+      headerForced: false,
+    };
   const audio = await model.encode(features, frames);
   const audioTokens = audio.length / model.hiddenSize;
   if (audioTokens !== qwenAudioTokenCount(frames)) {
@@ -70,19 +80,24 @@ export async function generateQwenTranscript({
   }
   const budget = maxNewTokens ?? qwenMaxNewTokens(pcm.length / 16000);
 
-  const first = await decode(language);
-  if (language || !fallbackLanguage)
-    return { ...first, forcedLanguage: language };
-  // The quantized decoder occasionally skips the "language X" header and
-  // stops at once; forcing the header avoids that knife edge.
-  if (first.language && first.text) return { ...first, forcedLanguage: null };
-  const retry = await decode(fallbackLanguage);
-  return { ...retry, forcedLanguage: fallbackLanguage };
+  if (language) {
+    const forced = await decode(QWEN_ASR_LANGUAGE_PREFIX_IDS[language]);
+    return { ...forced, forcedLanguage: language, headerForced: true };
+  }
+  const first = await decode([]);
+  // Headerless text is still a transcript (as in the official parser), and a
+  // header means the model decided, even if it decided "no speech".
+  if (first.hasHeader || first.text)
+    return { ...first, forcedLanguage: null, headerForced: false };
+  // The quantized decoder occasionally stops before writing anything. Force
+  // only the "language" keyword so the model still picks the language itself.
+  const retry = await decode([QWEN_ASR_HEADER_KEYWORD_ID]);
+  return { ...retry, forcedLanguage: null, headerForced: true };
 
-  /** @param {QwenLanguage | null} forced */
-  async function decode(forced) {
+  /** @param {ReadonlyArray<number>} prefixIds */
+  async function decode(prefixIds) {
     model.reset();
-    const prompt = buildQwenAsrPrompt({ audioTokens, language: forced });
+    const prompt = buildQwenAsrPrompt({ audioTokens, prefixIds });
     const embeds = model.embed(prompt.ids);
     embeds.set(audio, prompt.audioStart * model.hiddenSize);
 
@@ -94,39 +109,49 @@ export async function generateQwenTranscript({
       const token = argmax(logits);
       if (QWEN_ASR_EOS_IDS.includes(token)) break;
       generated.push(token);
-      if (isRepeating(generated)) {
-        while (generated.length && generated[generated.length - 1] === token) {
-          generated.pop();
-        }
+      const loop = loopTail(generated);
+      if (loop) {
+        // Greedy decoding does not leave a loop; keep one copy and stop.
+        generated.length -= loop.period * (loop.repeats - 1);
         break;
       }
       if (generated.length >= budget) break;
       logits = await model.step(model.embed([token]), position);
       position += 1;
     }
-    // A forced header lives in the prompt, so prepend it for parsing.
-    const parsed = parseQwenAsrOutput(
-      forced
-        ? [...QWEN_ASR_LANGUAGE_PREFIX_IDS[forced], ...generated]
-        : generated,
+    // A forced prefix lives in the prompt, so prepend it for parsing.
+    const { hasHeader, ...parsed } = parseQwenAsrOutput(
+      [...prefixIds, ...generated],
       decoder,
     );
-    return { ...parsed, tokens: generated };
+    return { ...parsed, hasHeader, tokens: generated };
   }
 }
 
-/** @param {number[]} tokens */
-function isRepeating(tokens) {
-  if (tokens.length < REPEAT_LIMIT) return false;
-  const last = tokens[tokens.length - 1];
-  for (
-    let index = tokens.length - REPEAT_LIMIT;
-    index < tokens.length;
-    index += 1
-  ) {
-    if (tokens[index] !== last) return false;
+/**
+ * The repeating tail of `tokens`, if it is long enough to be a loop.
+ * @param {number[]} tokens
+ * @returns {{ period: number, repeats: number } | null}
+ */
+function loopTail(tokens) {
+  for (let period = 1; period <= MAX_LOOP_PERIOD; period += 1) {
+    const repeats = Math.max(MIN_LOOP_REPEATS, Math.ceil(LOOP_TOKENS / period));
+    const span = period * repeats;
+    if (tokens.length < span) continue;
+    let periodic = true;
+    for (
+      let index = tokens.length - span + period;
+      index < tokens.length;
+      index += 1
+    ) {
+      if (tokens[index] !== tokens[index - period]) {
+        periodic = false;
+        break;
+      }
+    }
+    if (periodic) return { period, repeats };
   }
-  return true;
+  return null;
 }
 
 /** @param {Float32Array} values */

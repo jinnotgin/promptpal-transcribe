@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   QWEN_ASR_TOKENS,
   buildQwenAsrPrompt,
+  collapseRepeatedText,
   createQwenTokenDecoder,
   parseQwenAsrOutput,
   qwenAudioTokenCount,
@@ -30,9 +31,13 @@ describe("buildQwenAsrPrompt", () => {
     expect(prompt.audioStart).toBe(9);
   });
 
-  it("appends the forced-language prefix when a language is given", () => {
-    const prompt = buildQwenAsrPrompt({ audioTokens: 1, language: "zh" });
-    expect(Array.from(prompt.ids.slice(-3))).toEqual([
+  it("appends forced assistant prefix ids after the template", () => {
+    const prompt = buildQwenAsrPrompt({
+      audioTokens: 1,
+      prefixIds: [11528, 8453, QWEN_ASR_TOKENS.asrText],
+    });
+    expect(Array.from(prompt.ids.slice(-4))).toEqual([
+      198,
       11528,
       8453,
       QWEN_ASR_TOKENS.asrText,
@@ -71,6 +76,7 @@ describe("parseQwenAsrOutput", () => {
   const decoder = createQwenTokenDecoder({
     language: 11528,
     ĠChinese: 8453,
+    ĠNone: 2240,
     "ä½łå¥½": 108386,
   });
 
@@ -80,19 +86,62 @@ describe("parseQwenAsrOutput", () => {
         [11528, 8453, QWEN_ASR_TOKENS.asrText, 108386],
         decoder,
       ),
-    ).toEqual({ language: "Chinese", text: "你好" });
+    ).toEqual({ language: "Chinese", text: "你好", hasHeader: true });
   });
 
   it("treats output without the asr marker as transcript text", () => {
     expect(parseQwenAsrOutput([108386], decoder)).toEqual({
       language: null,
       text: "你好",
+      hasHeader: false,
     });
   });
 
   it("reports empty output for non-speech", () => {
     expect(
       parseQwenAsrOutput([11528, 8453, QWEN_ASR_TOKENS.asrText], decoder),
-    ).toEqual({ language: "Chinese", text: "" });
+    ).toEqual({ language: "Chinese", text: "", hasHeader: true });
+  });
+
+  it("treats a 'language None' header as no speech and drops trailing text", () => {
+    expect(
+      parseQwenAsrOutput(
+        [11528, 2240, QWEN_ASR_TOKENS.asrText, 108386],
+        decoder,
+      ),
+    ).toEqual({ language: null, text: "", hasHeader: true });
+  });
+
+  it("collapses runaway repeats in the transcript", () => {
+    const looped = createQwenTokenDecoder({ Okay: 1, ".": 2, ĠOkay: 3 });
+    const ids = [1, 2];
+    for (let index = 0; index < 10; index += 1) ids.push(3, 2);
+    expect(parseQwenAsrOutput(ids, looped).text).toBe("Okay.");
+  });
+});
+
+describe("collapseRepeatedText", () => {
+  it("keeps one copy of a phrase repeated six or more times", () => {
+    expect(collapseRepeatedText(`Hi. ${"Okay. ".repeat(6)}Bye.`)).toBe(
+      "Hi. Okay. Bye.",
+    );
+    expect(collapseRepeatedText("我，不，确，我，不，确，".repeat(3))).toBe(
+      "我，不，确，",
+    );
+  });
+
+  it("leaves short natural repetition alone", () => {
+    for (const text of [
+      "translate, translate like translate",
+      "Okay. Okay. Okay.",
+      "哈哈哈哈哈哈",
+      "no no no no no",
+    ]) {
+      expect(collapseRepeatedText(text)).toBe(text);
+    }
+  });
+
+  it("collapses a single character repeated more than twenty times", () => {
+    expect(collapseRepeatedText(`啊${"。".repeat(30)}好`)).toBe("啊。好");
   });
 });

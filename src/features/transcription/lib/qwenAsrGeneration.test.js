@@ -9,6 +9,7 @@ const HIDDEN = 4;
 const decoder = createQwenTokenDecoder({
   language: 11528,
   ĠChinese: 8453,
+  ĠNone: 2240,
   "ä½łå¥½": 108386,
   "ï¼Į": 3837,
 });
@@ -19,6 +20,7 @@ const decoder = createQwenTokenDecoder({
 function createFakeModel(script) {
   const calls = {
     prefillRows: 0,
+    prefills: 0,
     prefillEmbeds: new Float32Array(0),
     steps: /** @type {number[]} */ ([]),
   };
@@ -50,6 +52,7 @@ function createFakeModel(script) {
         /** @type {number} */ rows,
       ) {
         calls.prefillRows = rows;
+        calls.prefills += 1;
         calls.prefillEmbeds = embeds;
         return logitsFor(script[cursor++] ?? QWEN_ASR_TOKENS.imEnd);
       },
@@ -93,9 +96,26 @@ describe("generateQwenTranscript", () => {
     expect(fake.calls.steps).toEqual([28, 29, 30, 31, 32]);
   });
 
-  it("retries with a forced language when the model skips the language header", async () => {
+  it("keeps headerless transcript text without retrying", async () => {
+    const fake = createFakeModel([108386, QWEN_ASR_TOKENS.imEnd]);
+    const result = await generateQwenTranscript({
+      pcm: new Float32Array(16000),
+      model: fake.model,
+      decoder,
+    });
+    expect(result).toMatchObject({
+      text: "你好",
+      language: null,
+      headerForced: false,
+    });
+    expect(fake.calls.prefills).toBe(1);
+  });
+
+  it("retries an immediately empty decode by forcing only the header keyword", async () => {
     const fake = createFakeModel([
       QWEN_ASR_TOKENS.imEnd,
+      8453,
+      QWEN_ASR_TOKENS.asrText,
       108386,
       QWEN_ASR_TOKENS.imEnd,
     ]);
@@ -103,18 +123,56 @@ describe("generateQwenTranscript", () => {
       pcm: new Float32Array(16000),
       model: fake.model,
       decoder,
-      fallbackLanguage: "zh",
     });
-    expect(result).toMatchObject({ text: "你好", forcedLanguage: "zh" });
+    expect(result).toMatchObject({
+      text: "你好",
+      language: "Chinese",
+      headerForced: true,
+      forcedLanguage: null,
+    });
+    expect(fake.calls.prefills).toBe(2);
+    // The retry prompt ends with "language" but leaves the name to the model.
+    const lastRow = fake.calls.prefillRows - 1;
+    expect(fake.calls.prefillEmbeds[lastRow * HIDDEN]).toBe(11528);
   });
 
-  it("stops a degenerate single-token loop and drops the repeats", async () => {
+  it("does not retry when the model reports no speech", async () => {
+    const fake = createFakeModel([
+      11528,
+      2240,
+      QWEN_ASR_TOKENS.asrText,
+      QWEN_ASR_TOKENS.imEnd,
+    ]);
+    const result = await generateQwenTranscript({
+      pcm: new Float32Array(16000),
+      model: fake.model,
+      decoder,
+    });
+    expect(result.text).toBe("");
+    expect(fake.calls.prefills).toBe(1);
+  });
+
+  it("forces the full header only for an explicit language", async () => {
+    const fake = createFakeModel([108386, QWEN_ASR_TOKENS.imEnd]);
+    const result = await generateQwenTranscript({
+      pcm: new Float32Array(16000),
+      model: fake.model,
+      decoder,
+      language: "zh",
+    });
+    expect(result).toMatchObject({
+      text: "你好",
+      language: "Chinese",
+      forcedLanguage: "zh",
+    });
+  });
+
+  it("stops a degenerate single-token loop and keeps one copy", async () => {
     const fake = createFakeModel([
       11528,
       8453,
       QWEN_ASR_TOKENS.asrText,
-      108386,
-      ...new Array(60).fill(0),
+      ...new Array(60).fill(108386),
     ]);
     const result = await generateQwenTranscript({
       pcm: new Float32Array(16000),
@@ -122,6 +180,24 @@ describe("generateQwenTranscript", () => {
       decoder,
     });
     expect(result.text).toBe("你好");
+    expect(fake.calls.steps.length).toBeLessThan(30);
+  });
+
+  it("stops a multi-token phrase loop and keeps one copy", async () => {
+    const loop = [];
+    for (let index = 0; index < 60; index += 1) loop.push(108386, 3837);
+    const fake = createFakeModel([
+      11528,
+      8453,
+      QWEN_ASR_TOKENS.asrText,
+      ...loop,
+    ]);
+    const result = await generateQwenTranscript({
+      pcm: new Float32Array(16000),
+      model: fake.model,
+      decoder,
+    });
+    expect(result.text).toBe("你好，");
     expect(fake.calls.steps.length).toBeLessThan(30);
   });
 

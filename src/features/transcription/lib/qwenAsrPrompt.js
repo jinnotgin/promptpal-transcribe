@@ -25,12 +25,20 @@ const PREFIX_IDS = [151644, 9125, 198, 151645, 198, 151644, 882, 198, 151669];
 // <|audio_end|><|im_end|>\n<|im_start|>assistant\n
 const SUFFIX_IDS = [151670, 151645, 198, 151644, 77091, 198];
 
+/** "language": the first header token, before the model names a language. */
+export const QWEN_ASR_HEADER_KEYWORD_ID = 11528;
+
 /** "language <Name><asr_text>" ids for forced-language decoding. */
 export const QWEN_ASR_LANGUAGE_PREFIX_IDS = Object.freeze({
   zh: [11528, 8453, 151704],
   en: [11528, 6364, 151704],
   yue: [11528, 72366, 2367, 151704],
 });
+
+/** Phrase repeats at or above this count are a decoding loop, not speech. */
+const PHRASE_REPEAT_LIMIT = 6;
+/** Single characters may legitimately run long ("哈哈哈", "……"). */
+const CHAR_REPEAT_LIMIT = 20;
 
 const CONV_WINDOW = 100;
 const TOKENS_PER_WINDOW = 13;
@@ -48,15 +56,16 @@ export function qwenAudioTokenCount(frames) {
 }
 
 /**
- * @param {{ audioTokens: number, language?: keyof typeof QWEN_ASR_LANGUAGE_PREFIX_IDS | null }} options
+ * @param {{ audioTokens: number, prefixIds?: ReadonlyArray<number> }} options
+ *   `prefixIds` start the assistant turn, e.g. a forced language header
  * @returns {{ ids: number[], audioStart: number }}
  */
-export function buildQwenAsrPrompt({ audioTokens, language = null }) {
+export function buildQwenAsrPrompt({ audioTokens, prefixIds = [] }) {
   const ids = [
     ...PREFIX_IDS,
     ...new Array(audioTokens).fill(QWEN_ASR_TOKENS.audioPad),
     ...SUFFIX_IDS,
-    ...(language ? QWEN_ASR_LANGUAGE_PREFIX_IDS[language] : []),
+    ...prefixIds,
   ];
   return { ids, audioStart: PREFIX_IDS.length };
 }
@@ -111,15 +120,46 @@ export function createQwenTokenDecoder(vocab) {
  * Split generated ids into the detected language and the transcript.
  * @param {ArrayLike<number>} ids generated ids (prompt excluded)
  * @param {{ decode: (ids: ArrayLike<number>) => string }} decoder
- * @returns {{ language: string | null, text: string }}
+ * @returns {{ language: string | null, text: string, hasHeader: boolean }}
  */
 export function parseQwenAsrOutput(ids, decoder) {
   const list = Array.from(ids);
   const marker = list.indexOf(QWEN_ASR_TOKENS.asrText);
-  if (marker < 0) return { language: null, text: decoder.decode(list).trim() };
+  if (marker < 0) {
+    return {
+      language: null,
+      text: collapseRepeatedText(decoder.decode(list).trim()),
+      hasHeader: false,
+    };
+  }
   const header = decoder.decode(list.slice(0, marker)).trim();
   const language = header.replace(/^language\s*/i, "").trim() || null;
-  return { language, text: decoder.decode(list.slice(marker + 1)).trim() };
+  // "language None" is the model's own no-speech verdict; text after it is
+  // a hallucination on silence or noise.
+  if (language?.toLowerCase() === "none")
+    return { language: null, text: "", hasHeader: true };
+  return {
+    language,
+    text: collapseRepeatedText(decoder.decode(list.slice(marker + 1)).trim()),
+    hasHeader: true,
+  };
+}
+
+/**
+ * Keep one copy of runaway repeats, after the official `qwen_asr`
+ * `detect_and_fix_repetitions` but with a lower phrase limit: real speech
+ * rarely repeats a phrase six times in a row.
+ * @param {string} text
+ */
+export function collapseRepeatedText(text) {
+  const chars = text.replace(
+    new RegExp(`(.)\\1{${CHAR_REPEAT_LIMIT},}`, "gsu"),
+    "$1",
+  );
+  return chars.replace(
+    new RegExp(`(.{2,40}?)(?:\\s*\\1){${PHRASE_REPEAT_LIMIT - 1},}`, "gsu"),
+    (match, unit) => (/^(.)\1*$/su.test(unit) ? match : unit),
+  );
 }
 
 /** Inverse of GPT-2's `bytes_to_unicode`. */

@@ -110,7 +110,6 @@ async function processChunk(audio, chunkStart, speaker) {
     pcm: audio,
     model,
     decoder: tokenDecoder,
-    fallbackLanguage: "zh",
   });
   const duration = audio.length / SAMPLE_RATE;
   return {
@@ -123,6 +122,7 @@ async function processChunk(audio, chunkStart, speaker) {
       engine: "qwen3-asr",
       language: result.language,
       forcedLanguage: result.forcedLanguage,
+      headerForced: result.headerForced,
       generatedTokens: result.tokens.length,
       textLength: result.text.length,
       rtf: (performance.now() - startedAt) / 1000 / Math.max(0.01, duration),
