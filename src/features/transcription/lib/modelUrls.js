@@ -7,6 +7,8 @@ const NEMOTRON_ONNX_BASE =
   "https://huggingface.co/onnx-community/Nemotron-3-Diarization-ONNX/resolve/353b6f8ad2cac3580e982d7fbdf0a010786b0406/onnx";
 const SHERPA_SEGMENTATION_BASE =
   "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0";
+const SENSEVOICE_BASE =
+  "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/2365baeacb507f821a0c8120fcee3d484dba7a07";
 const SHERPA_EMBEDDING_BASE =
   "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/0743f301363dec56491a490f6d6cbc9d67f9a3bf";
 
@@ -36,6 +38,18 @@ export const MODEL_ASSETS = {
     url: "https://huggingface.co/grikdotnet/parakeet-tdt-0.6b-fp16/resolve/main/vocab.txt",
     cacheKey: "parakeet-vocab",
     runtime: "both",
+  },
+  // SenseVoice-Small int8 (239 MB) for Chinese/English. Its MatMulInteger
+  // ops have no WebGPU kernel, so it always runs on WASM.
+  senseVoiceInt8: {
+    url: `${SENSEVOICE_BASE}/model.int8.onnx`,
+    cacheKey: "sensevoice-small-int8",
+    runtime: "wasm",
+  },
+  senseVoiceTokens: {
+    url: `${SENSEVOICE_BASE}/tokens.txt`,
+    cacheKey: "sensevoice-small-tokens",
+    runtime: "wasm",
   },
   nemotronInt8: {
     url: `${NEMOTRON_ONNX_BASE}/model_quantized.onnx`,
