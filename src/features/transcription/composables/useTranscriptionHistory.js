@@ -1,4 +1,4 @@
-import { db } from "@/features/transcription/lib/transcriptionDb.js";
+import { getTranscriptionDb } from "@/features/transcription/lib/transcriptionDb.js";
 import {
   buildPayload,
   buildSummary,
@@ -21,6 +21,7 @@ export function useTranscriptionHistory() {
    * @returns {Promise<TranscriptSummary[]>}
    */
   async function listSummaries() {
+    const db = await getTranscriptionDb();
     return db.transcripts.orderBy("createdAt").reverse().toArray();
   }
 
@@ -31,6 +32,7 @@ export function useTranscriptionHistory() {
    */
   async function loadTranscript(id) {
     if (!id) return null;
+    const db = await getTranscriptionDb();
     const [summary, payload] = await Promise.all([
       db.transcripts.get(id),
       db.transcriptPayloads.get(id),
@@ -68,6 +70,7 @@ export function useTranscriptionHistory() {
       throw new Error("Cannot save a transcript with no segments");
     }
 
+    const db = await getTranscriptionDb();
     const id = entry.id || generateRecordId();
     const now = new Date().toISOString();
     const existing = entry.id ? await db.transcripts.get(entry.id) : null;
@@ -83,7 +86,7 @@ export function useTranscriptionHistory() {
         db.transcriptPayloads,
         db.transcriptAudioFragments,
         async () => {
-          await validateManifestAsset(id, payload.audioManifest);
+          await validateManifestAsset(db, id, payload.audioManifest);
           await db.transcripts.put(summary);
           await db.transcriptPayloads.put(payload);
         },
@@ -110,6 +113,7 @@ export function useTranscriptionHistory() {
    */
   async function deleteTranscript(id) {
     if (!id) return;
+    const db = await getTranscriptionDb();
     await db.transaction(
       "rw",
       db.transcripts,
@@ -131,6 +135,7 @@ export function useTranscriptionHistory() {
    * @returns {Promise<void>}
    */
   async function deleteAll() {
+    const db = await getTranscriptionDb();
     await db.transaction(
       "rw",
       db.transcripts,
@@ -157,10 +162,11 @@ export function useTranscriptionHistory() {
  * Validate staged v3 rows inside the same transaction that makes their
  * manifest durable. Blob bytes are not copied; only row order and Blob sizes
  * are inspected.
+ * @param {import('@/features/transcription/lib/transcriptionDb.js').TranscriptionDb} db
  * @param {string} transcriptId
  * @param {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} manifest
  */
-async function validateManifestAsset(transcriptId, manifest) {
+async function validateManifestAsset(db, transcriptId, manifest) {
   for (const part of manifest.parts) {
     const rows = await db.transcriptAudioFragments
       .where("[transcriptId+partIndex]")

@@ -5,7 +5,18 @@ import {
   generateRecordId,
 } from "@/features/transcription/lib/transcriptHistoryRecords.js";
 
-export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
+/**
+ * This app was forked from the PromptPal project and later renamed, so new
+ * browsers get a neutral, unbranded database name.
+ */
+export const TRANSCRIPTION_DB_NAME = "transcription";
+
+/**
+ * The name used while this app was part of PromptPal. Browsers that already
+ * have it keep using it, so saved transcripts and downloaded models are never
+ * stranded and nothing has to be copied. See resolveTranscriptionDbName().
+ */
+export const LEGACY_TRANSCRIPTION_DB_NAME = "promptpal-transcription";
 
 /**
  * @typedef {{ text: string, start: number, end: number, confidence?: number, utteranceId?: number }} TranscriptWord
@@ -53,9 +64,12 @@ export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  * }} TranscriptionDb
  */
 
-/** @returns {TranscriptionDb} */
-export const createTranscriptionDb = () => {
-  const db = /** @type {TranscriptionDb} */ (new Dexie(TRANSCRIPTION_DB_NAME));
+/**
+ * @param {string} [name]
+ * @returns {TranscriptionDb}
+ */
+export const createTranscriptionDb = (name = TRANSCRIPTION_DB_NAME) => {
+  const db = /** @type {TranscriptionDb} */ (new Dexie(name));
 
   // v1: single full-row transcript history keyed by id (only ever "latest").
   db.version(1).stores({
@@ -141,5 +155,31 @@ export const createTranscriptionDb = () => {
   return db;
 };
 
-/** @type {TranscriptionDb} */
-export const db = createTranscriptionDb();
+/** @type {Promise<string> | undefined} */
+let dbNamePromise;
+
+/**
+ * Pick the database name once per page load: the legacy PromptPal name if
+ * this browser already has that database, otherwise the neutral name.
+ * Dexie.exists() aborts its probe for a missing database, so checking never
+ * creates the legacy database. Every opener (Dexie history and the raw
+ * IndexedDB model cache) must go through here so a new user cannot end up
+ * with data split across both names.
+ * @returns {Promise<string>}
+ */
+export function resolveTranscriptionDbName() {
+  dbNamePromise ??= Dexie.exists(LEGACY_TRANSCRIPTION_DB_NAME).then(
+    (legacyExists) =>
+      legacyExists ? LEGACY_TRANSCRIPTION_DB_NAME : TRANSCRIPTION_DB_NAME,
+  );
+  return dbNamePromise;
+}
+
+/** @type {Promise<TranscriptionDb> | undefined} */
+let dbPromise;
+
+/** @returns {Promise<TranscriptionDb>} */
+export function getTranscriptionDb() {
+  dbPromise ??= resolveTranscriptionDbName().then(createTranscriptionDb);
+  return dbPromise;
+}

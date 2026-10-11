@@ -1,7 +1,6 @@
 import { MODEL_ASSETS } from "./modelUrls.js";
-import { TRANSCRIPTION_DB_NAME } from "./transcriptionDb.js";
+import { resolveTranscriptionDbName } from "./transcriptionDb.js";
 
-const DB_NAME = TRANSCRIPTION_DB_NAME;
 const MODEL_STORE = "modelCache";
 /**
  * Models are cached in 64 MB records: some Chromium builds reject IndexedDB
@@ -18,9 +17,12 @@ function chunkKey(cacheKey, index) {
 /**
  * @returns {Promise<IDBDatabase>}
  */
-export function openTranscriptionModelDb() {
+export async function openTranscriptionModelDb() {
+  // indexedDB.open() creates a missing database, so resolve the shared name
+  // first instead of opening one directly.
+  const dbName = await resolveTranscriptionDbName();
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME);
+    const request = indexedDB.open(dbName);
     request.onupgradeneeded = () => {
       const db = request.result;
       ensureStores(db);
@@ -34,7 +36,7 @@ export function openTranscriptionModelDb() {
 
       const nextVersion = db.version + 1;
       db.close();
-      const upgradeRequest = indexedDB.open(DB_NAME, nextVersion);
+      const upgradeRequest = indexedDB.open(dbName, nextVersion);
       upgradeRequest.onupgradeneeded = () => {
         ensureStores(upgradeRequest.result);
       };

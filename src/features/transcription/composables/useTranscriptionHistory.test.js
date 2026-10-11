@@ -2,10 +2,12 @@ import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  db,
+  getTranscriptionDb,
   TRANSCRIPTION_DB_NAME,
 } from "@/features/transcription/lib/transcriptionDb.js";
 import { useTranscriptionHistory } from "./useTranscriptionHistory.js";
+
+const db = await getTranscriptionDb();
 
 const makeSegments = (text = "hello there") => [
   { id: "seg-1", start: 0, end: 1, text, speaker: "Speaker 1" },

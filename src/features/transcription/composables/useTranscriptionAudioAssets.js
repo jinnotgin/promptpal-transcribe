@@ -1,5 +1,7 @@
-import { db } from "@/features/transcription/lib/transcriptionDb.js";
+import { getTranscriptionDb } from "@/features/transcription/lib/transcriptionDb.js";
 
+// Kept from the PromptPal fork: renaming the prefix would orphan leases held
+// by tabs that are still open across a deploy. It is never shown to users.
 const AUDIO_STAGING_LEASE_PREFIX = "promptpal-transcription:audio-staging:";
 const DEFAULT_LEASE_HEARTBEAT_MS = 30_000;
 const DEFAULT_LEASE_STALE_MS = 5 * 60_000;
@@ -79,6 +81,7 @@ export function useTranscriptionAudioAssets(options = {}) {
       fragment.fragmentIndex,
       "fragment index",
     );
+    const db = await getTranscriptionDb();
     await db.transcriptAudioFragments.put({
       transcriptId: fragment.transcriptId,
       partIndex,
@@ -110,6 +113,7 @@ export function useTranscriptionAudioAssets(options = {}) {
     const position = nonNegativeInteger(write.position, "write position");
     const pageSize = positiveInteger(write.pageSize, "page size");
     const mimeType = write.mimeType || "audio/mpeg";
+    const db = await getTranscriptionDb();
     let sourceOffset = 0;
 
     while (sourceOffset < write.data.byteLength) {
@@ -151,6 +155,7 @@ export function useTranscriptionAudioAssets(options = {}) {
   /** @param {string} transcriptId @param {number} partIndex */
   async function getStagedPartStats(transcriptId, partIndex) {
     const normalizedPartIndex = nonNegativeInteger(partIndex, "part index");
+    const db = await getTranscriptionDb();
     const rows = await db.transcriptAudioFragments
       .where("[transcriptId+partIndex]")
       .equals([transcriptId, normalizedPartIndex])
@@ -171,6 +176,7 @@ export function useTranscriptionAudioAssets(options = {}) {
    * @param {{ index: number, mimeType: string, fragmentCount: number }} part
    */
   async function getPartBlob(transcriptId, part) {
+    const db = await getTranscriptionDb();
     const rows = await db.transcriptAudioFragments
       .where("[transcriptId+partIndex]")
       .equals([transcriptId, part.index])
@@ -191,6 +197,7 @@ export function useTranscriptionAudioAssets(options = {}) {
   /** @param {string} transcriptId */
   async function deleteAsset(transcriptId) {
     if (!transcriptId) return;
+    const db = await getTranscriptionDb();
     await db.transcriptAudioFragments
       .where("transcriptId")
       .equals(transcriptId)
@@ -224,6 +231,7 @@ export function useTranscriptionAudioAssets(options = {}) {
   async function reconcileOrphans(protectedTranscriptIds = []) {
     if (!leaseStorage) return;
     const protectedIds = new Set(protectedTranscriptIds.filter(Boolean));
+    const db = await getTranscriptionDb();
     const transcriptIds = await db.transcriptAudioFragments
       .orderBy("transcriptId")
       .uniqueKeys();

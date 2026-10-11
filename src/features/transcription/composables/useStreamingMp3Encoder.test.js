@@ -2,11 +2,13 @@ import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  db,
+  getTranscriptionDb,
   TRANSCRIPTION_DB_NAME,
 } from "@/features/transcription/lib/transcriptionDb.js";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { useStreamingMp3Encoder } from "./useStreamingMp3Encoder.js";
+
+const db = await getTranscriptionDb();
 
 const resetDb = async () => {
   if (db.isOpen()) db.close();
