@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { constructTranscriptSegments } from "./transcriptPostProcessing.js";
+import {
+  constructTranscriptSegments,
+  flattenSegmentWords,
+  normalizeConstructedSegments,
+} from "./transcriptPostProcessing.js";
 
 const mocks = vi.hoisted(() => ({
   constructSentences: vi.fn(),
@@ -63,5 +67,77 @@ describe("constructTranscriptSegments", () => {
     });
 
     expect(segments[0].speaker).toBe("Speaker A");
+  });
+});
+
+/**
+ * @param {string[]} texts
+ */
+function timed(texts) {
+  return texts.map((text, index) => ({
+    text,
+    start: index * 0.2,
+    end: index * 0.2 + 0.2,
+  }));
+}
+
+describe("normalizeConstructedSegments", () => {
+  it("re-joins Chinese text the sentence builder spaced out", () => {
+    const [segment] = normalizeConstructedSegments([
+      {
+        id: "c1",
+        text: "我 们 用 machine learning",
+        start: 0,
+        end: 1,
+        speaker: "Speaker A",
+        words: timed(["我", "们", "用", "machine", "learning"]),
+      },
+    ]);
+    expect(segment.text).toBe("我们用machine learning");
+  });
+
+  it("splits Chinese sentences the builder ran together", () => {
+    const segments = normalizeConstructedSegments([
+      {
+        id: "c1",
+        text: "开 饭 了。 好 吗？",
+        start: 0,
+        end: 1,
+        speaker: "Speaker B",
+        words: timed(["开", "饭", "了。", "好", "吗？"]),
+      },
+    ]);
+    expect(segments.map((segment) => segment.text)).toEqual([
+      "开饭了。",
+      "好吗？",
+    ]);
+    expect(segments[1]).toMatchObject({
+      start: 0.6,
+      end: 1,
+      speaker: "Speaker B",
+    });
+    expect(new Set(segments.map((segment) => segment.id)).size).toBe(2);
+  });
+
+  it("leaves English text from the builder untouched", () => {
+    const [segment] = normalizeConstructedSegments([
+      {
+        id: "c1",
+        text: "Hello there. Bye.",
+        start: 0,
+        end: 1,
+        words: timed(["Hello", "there.", "Bye."]),
+      },
+    ]);
+    expect(segment.text).toBe("Hello there. Bye.");
+  });
+});
+
+describe("flattenSegmentWords", () => {
+  it("splits untimed Chinese rows into characters", () => {
+    const words = flattenSegmentWords([
+      { id: "r", text: "你好。", start: 0, end: 0.4, speaker: null },
+    ]);
+    expect(words.map((word) => word.text)).toEqual(["你", "好。"]);
   });
 });

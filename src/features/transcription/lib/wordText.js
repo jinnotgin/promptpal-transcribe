@@ -40,3 +40,44 @@ function needsSpace(before, next) {
   const first = Array.from(next)[0] ?? "";
   return !isUnspacedScript(last) && !isUnspacedScript(first);
 }
+
+const SENTENCE_END = /[.!?。！？]["'”’」』)]?$/u;
+const PUNCTUATION = /^[\p{P}\p{S}]$/u;
+
+/**
+ * @param {string} text
+ */
+export function endsSentence(text) {
+  return SENTENCE_END.test(text.trim());
+}
+
+/**
+ * Splits display text into words for rows that carry no word timings:
+ * whitespace-separated runs, with Chinese and Japanese characters as one word
+ * each and punctuation attached to the word before it.
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function splitTextIntoWords(text) {
+  /** @type {string[]} */
+  const words = [];
+  for (const token of text.trim().split(/\s+/).filter(Boolean)) {
+    let latinRun = "";
+    const flush = () => {
+      if (latinRun) words.push(latinRun);
+      latinRun = "";
+    };
+    for (const char of token) {
+      if (isUnspacedScript(char)) {
+        flush();
+        words.push(char);
+      } else if (PUNCTUATION.test(char) && !latinRun && words.length) {
+        words[words.length - 1] += char;
+      } else {
+        latinRun += char;
+      }
+    }
+    flush();
+  }
+  return words;
+}

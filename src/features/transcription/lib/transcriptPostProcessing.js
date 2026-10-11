@@ -3,6 +3,13 @@ import {
   initTranscriptProcessingCore,
   prepareWords,
 } from "./transcriptProcessingCore.js";
+import {
+  isUnspacedScript,
+  joinWordTexts,
+  splitTextIntoWords,
+} from "./wordText.js";
+
+const UNSPACED_SENTENCE_END = /[。！？]["”」』)]?$/u;
 
 /**
  * @typedef {import('./transcriptionDb.js').TranscriptSegment} TranscriptSegment
@@ -86,7 +93,47 @@ export function normalizeConstructedSegments(constructed) {
 
   return source
     .map((segment, index) => normalizeConstructedSegment(segment, index))
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((segment) => splitUnspacedSentences(segment));
+}
+
+/**
+ * The WASM sentence builder joins words with spaces and only ends sentences
+ * on Latin punctuation. For rows with Chinese or Japanese words, rebuild the
+ * text script-aware and split after 。！？. Latin-only rows are kept as built.
+ * @param {TranscriptSegment} segment
+ * @returns {TranscriptSegment[]}
+ */
+function splitUnspacedSentences(segment) {
+  const words = segment.words;
+  if (!words?.length) return [segment];
+  if (!words.some((word) => Array.from(word.text).some(isUnspacedScript))) {
+    return [segment];
+  }
+  /** @type {Array<NonNullable<TranscriptSegment['words']>>} */
+  const sentences = [[]];
+  words.forEach((word, index) => {
+    sentences[sentences.length - 1].push(word);
+    if (UNSPACED_SENTENCE_END.test(word.text) && index < words.length - 1) {
+      sentences.push([]);
+    }
+  });
+  if (sentences.length === 1) {
+    return [
+      { ...segment, text: joinWordTexts(words.map((word) => word.text)) },
+    ];
+  }
+  return sentences.map((sentenceWords, index) => ({
+    ...segment,
+    id: `${segment.id}-${index}`,
+    text: joinWordTexts(sentenceWords.map((word) => word.text)),
+    start: index === 0 ? segment.start : sentenceWords[0].start,
+    end:
+      index === sentences.length - 1
+        ? segment.end
+        : sentenceWords[sentenceWords.length - 1].end,
+    words: sentenceWords,
+  }));
 }
 
 /**
@@ -165,7 +212,7 @@ function normalizeSpeaker(speaker) {
  * @param {TranscriptSegment} segment
  */
 function fallbackWords(segment) {
-  const words = segment.text.trim().split(/\s+/).filter(Boolean);
+  const words = splitTextIntoWords(segment.text);
   if (!words.length) return [];
   const duration = Math.max(0.01, segment.end - segment.start);
   const step = duration / words.length;

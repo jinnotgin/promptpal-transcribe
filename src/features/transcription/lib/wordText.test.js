@@ -1,5 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { isUnspacedScript, joinWordTexts } from "./wordText.js";
+import {
+  endsSentence,
+  isUnspacedScript,
+  joinWordTexts,
+  splitTextIntoWords,
+} from "./wordText.js";
+
+describe("splitTextIntoWords", () => {
+  it("splits Latin text on whitespace", () => {
+    expect(splitTextIntoWords(" Hello  there. ")).toEqual(["Hello", "there."]);
+  });
+
+  it("splits Chinese into characters, keeping punctuation and Latin runs", () => {
+    expect(splitTextIntoWords("我们用machine learning做，好。")).toEqual([
+      "我",
+      "们",
+      "用",
+      "machine",
+      "learning",
+      "做，",
+      "好。",
+    ]);
+  });
+});
+
+describe("endsSentence", () => {
+  it("recognises Latin and CJK sentence-final punctuation", () => {
+    expect(endsSentence("done.")).toBe(true);
+    expect(endsSentence("好。")).toBe(true);
+    expect(endsSentence("吗？")).toBe(true);
+    expect(endsSentence("对！")).toBe(true);
+    expect(endsSentence("做，")).toBe(false);
+    expect(endsSentence("word")).toBe(false);
+  });
+});
 
 describe("joinWordTexts", () => {
   it("separates English words with spaces", () => {

@@ -7,6 +7,8 @@
  * emissions are removed.
  */
 
+import { endsSentence, joinWordTexts, splitTextIntoWords } from "./wordText.js";
+
 /** @typedef {import('./transcriptionDb.js').TranscriptSegment} TranscriptSegment */
 /** @typedef {import('./chunkingStrategy.js').AsrChunk} AsrChunk */
 
@@ -66,7 +68,7 @@ export function rebuildSegmentsFromWords(segments) {
       current.words.length >= 28 ||
       word.start - current.end > 1.25 ||
       word.end - current.start > 12 ||
-      /[.!?]$/.test(current.words[current.words.length - 1]?.text || "");
+      endsSentence(current.words[current.words.length - 1]?.text || "");
 
     if (shouldStartNew) {
       if (current) rebuilt.push(finalizeWordsSegment(current, rebuilt.length));
@@ -110,12 +112,13 @@ export function mergeAdjacentSegments(segments, maxGap = 1.0) {
     const smallGap = curr.start - prev.end <= maxGap;
 
     if (sameSpeaker && smallGap) {
-      prev.end = curr.end;
-      prev.text = prev.text + " " + curr.text;
+      // Derive fallback words before prev's text and end change.
       prev.words = [
         ...(prev.words || fallbackWords(prev)),
         ...(curr.words || fallbackWords(curr)),
       ];
+      prev.end = curr.end;
+      prev.text = joinWordTexts([prev.text, curr.text]);
     } else {
       merged.push({ ...curr });
     }
@@ -129,7 +132,7 @@ export function mergeAdjacentSegments(segments, maxGap = 1.0) {
  * @returns {NonNullable<TranscriptSegment['words']>}
  */
 function fallbackWords(segment) {
-  const words = segment.text.trim().split(/\s+/).filter(Boolean);
+  const words = splitTextIntoWords(segment.text);
   if (!words.length) return [];
   const duration = Math.max(0.01, segment.end - segment.start);
   const step = duration / words.length;
@@ -191,11 +194,18 @@ function dedupeWords(words) {
 }
 
 /**
- * @param {{ text: string, start: number, end: number }} previous
- * @param {{ text: string, start: number, end: number }} current
+ * @param {{ text: string, start: number, end: number, utteranceId?: number }} previous
+ * @param {{ text: string, start: number, end: number, utteranceId?: number }} current
  */
 function isNearDuplicateWord(previous, current) {
   if (normalizeWord(previous.text) !== normalizeWord(current.text))
+    return false;
+  // Overlap duplicates come from different chunks; repeats within one chunk
+  // are real speech (谢谢, "very very").
+  if (
+    previous.utteranceId != null &&
+    previous.utteranceId === current.utteranceId
+  )
     return false;
   const startDelta = Math.abs(current.start - previous.start);
   const overlap =
@@ -218,7 +228,7 @@ function finalizeWordsSegment(segment, index) {
     id: `asr-row-${index}-${Math.round(segment.start * 1000)}`,
     start: roundTime(segment.start),
     end: roundTime(segment.end),
-    text: segment.words.map((word) => word.text).join(" "),
+    text: joinWordTexts(segment.words.map((word) => word.text)),
     speaker: segment.speaker,
     words: segment.words.map((word) => ({
       text: word.text,

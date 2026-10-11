@@ -10,6 +10,8 @@
 
 import { normalizeWaveformSamples } from "./waveformAccumulator.js";
 import { normalizeTranscriptAudioManifest } from "./transcriptAudioManifest.js";
+import { normalizeTranscriptionLanguage } from "./engineSelection.js";
+import { joinWordTexts } from "./wordText.js";
 
 /**
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment} TranscriptSegment
@@ -101,7 +103,7 @@ export function derivePreview(segments) {
       .replace(/\s+/g, " ")
       .trim();
     if (!text) continue;
-    preview = preview ? `${preview} ${text}` : text;
+    preview = joinWordTexts([preview, text]);
     if (preview.length >= PREVIEW_MAX_LENGTH) break;
   }
   if (preview.length <= PREVIEW_MAX_LENGTH) return preview;
@@ -119,6 +121,7 @@ export function derivePreview(segments) {
  *   fileDuration?: number | null,
  *   isLiveRecording?: boolean,
  *   hasReprocessedLiveRecording?: boolean,
+ *   language?: string,
  *   segments?: TranscriptSegment[],
  *   addedSpeakerIds?: string[],
  * }} entry
@@ -139,6 +142,7 @@ export function buildSummary(entry) {
         : Number(entry.fileDuration),
     isLiveRecording: Boolean(entry.isLiveRecording),
     hasReprocessedLiveRecording: Boolean(entry.hasReprocessedLiveRecording),
+    language: normalizeTranscriptionLanguage(entry.language),
     speakerCount: countSpeakers(segments, entry.addedSpeakerIds),
     segmentCount: segments.length,
     preview: derivePreview(segments),

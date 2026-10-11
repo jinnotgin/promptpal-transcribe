@@ -23,6 +23,7 @@ export const TRANSCRIPTION_DB_NAME = "promptpal-transcription";
  *   fileDuration: number | null,
  *   isLiveRecording: boolean,
  *   hasReprocessedLiveRecording: boolean,
+ *   language?: import('./engineSelection.js').TranscriptionLanguage,
  *   speakerCount: number,
  *   segmentCount: number,
  *   preview: string,

@@ -82,6 +82,15 @@ describe("transcriptHistoryRecords", () => {
       expect(preview.endsWith("…")).toBe(true);
     });
 
+    it("joins Chinese rows without spaces", () => {
+      expect(
+        derivePreview([
+          segment({ text: "开饭了。" }),
+          segment({ id: "s2", text: "好吗？" }),
+        ]),
+      ).toBe("开饭了。好吗？");
+    });
+
     it("skips empty segments", () => {
       expect(
         derivePreview([segment({ text: "  " }), segment({ text: "real" })]),
@@ -116,6 +125,16 @@ describe("transcriptHistoryRecords", () => {
       });
       expect(summary.preview).toBe("hello world hello world");
       expect(summary.updatedAt).toBeTruthy();
+    });
+
+    it("records the transcription language, defaulting to English", () => {
+      expect(
+        buildSummary({ id: "zh", language: "zh-en", segments: [segment()] })
+          .language,
+      ).toBe("zh-en");
+      expect(buildSummary({ id: "old", segments: [segment()] }).language).toBe(
+        "en",
+      );
     });
 
     it("falls back to null duration when not finite", () => {
