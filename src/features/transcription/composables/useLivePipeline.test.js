@@ -265,6 +265,7 @@ describe("useLivePipeline microphone switching", () => {
     expect(asrMocks.initialize).toHaveBeenCalledWith("wasm", {
       engine: "sensevoice",
       variant: "int8",
+      language: "auto",
     });
 
     // 20 s of unbroken speech must not reach SenseVoice as one chunk.

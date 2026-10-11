@@ -72,19 +72,40 @@ describe("selectTranscriptionEngines", () => {
 });
 
 describe("language selection", () => {
-  it("uses SenseVoice for Chinese/English on every runtime", () => {
+  it("uses SenseVoice for Chinese and mixed audio on every runtime", () => {
     for (const runtime of /** @type {const} */ (["webgpu", "wasm"])) {
-      expect(
-        selectTranscriptionEngines({
-          speakerMode: "solo",
-          runtime,
-          language: "zh-en",
-        }),
-      ).toMatchObject({
-        asr: { engine: "sensevoice", variant: "int8" },
-        assetKeys: ["senseVoiceInt8", "senseVoiceTokens"],
-      });
+      for (const language of /** @type {const} */ (["zh", "zh-en"])) {
+        expect(
+          selectTranscriptionEngines({
+            speakerMode: "solo",
+            runtime,
+            language,
+          }),
+        ).toMatchObject({
+          asr: { engine: "sensevoice", variant: "int8" },
+          assetKeys: ["senseVoiceInt8", "senseVoiceTokens"],
+        });
+      }
     }
+  });
+
+  it("hints Chinese to SenseVoice and auto-detects mixed audio", () => {
+    const asrFor = (/** @type {'zh' | 'zh-en'} */ language) =>
+      selectTranscriptionEngines({
+        speakerMode: "solo",
+        runtime: "wasm",
+        language,
+      }).asr;
+    expect(asrFor("zh")).toEqual({
+      engine: "sensevoice",
+      variant: "int8",
+      language: "zh",
+    });
+    expect(asrFor("zh-en")).toEqual({
+      engine: "sensevoice",
+      variant: "int8",
+      language: "auto",
+    });
   });
 
   it("pairs SenseVoice with the chosen diarizer", () => {
@@ -114,6 +135,7 @@ describe("language selection", () => {
 
   it("normalizes stored values, falling back to English", () => {
     expect(normalizeTranscriptionLanguage("zh-en")).toBe("zh-en");
+    expect(normalizeTranscriptionLanguage("zh")).toBe("zh");
     expect(normalizeTranscriptionLanguage("en")).toBe("en");
     expect(normalizeTranscriptionLanguage(undefined)).toBe("en");
     expect(normalizeTranscriptionLanguage("fr")).toBe("en");

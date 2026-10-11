@@ -256,7 +256,7 @@ const prefetchModelProgress = computed(() => {
   );
 });
 const prefetchAsrEngine = computed(() =>
-  store.transcriptionLanguage === "zh-en" ? "sensevoice" : "parakeet",
+  store.transcriptionLanguage === "en" ? "parakeet" : "sensevoice",
 );
 /**
  * Language of the transcript on screen: the setting when a run starts, or

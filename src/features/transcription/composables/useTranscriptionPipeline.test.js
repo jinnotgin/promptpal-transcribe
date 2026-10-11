@@ -203,6 +203,7 @@ describe("useTranscriptionPipeline uploaded media", () => {
     expect(mocks.asrInit).toHaveBeenCalledWith("wasm", {
       engine: "sensevoice",
       variant: "int8",
+      language: "auto",
     });
     expect(mocks.transcribeWindow.mock.calls[0][2]).toMatchObject({
       speech: [{ start: 0.2, end: 0.8 }],

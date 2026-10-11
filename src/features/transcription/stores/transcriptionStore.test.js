@@ -71,7 +71,11 @@ describe("speaker identification settings", () => {
     expect(store.engineSelection.asr).toEqual({
       engine: "sensevoice",
       variant: "int8",
+      language: "auto",
     });
+    store.setTranscriptionLanguage("zh");
+    expect(store.engineSelection.asr).toMatchObject({ language: "zh" });
+    store.setTranscriptionLanguage("zh-en");
 
     setActivePinia(createPinia());
     expect(useTranscriptionStore().transcriptionLanguage).toBe("zh-en");

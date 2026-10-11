@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 
 const props = defineProps({
-  /** "en" (Parakeet) or "zh-en" (SenseVoice) */
+  /** "en" (Parakeet), or "zh" / "zh-en" (SenseVoice) */
   language: { type: String, default: "en" },
   disabled: { type: Boolean, default: false },
 });
@@ -12,13 +12,18 @@ const emit = defineEmits(["update:language"]);
 
 const languageOptions = [
   { value: "en", label: "English" },
-  { value: "zh-en", label: "English + 中文" },
+  { value: "zh", label: "Chinese" },
+  { value: "zh-en", label: "Mixed" },
 ];
 
-const description = computed(() =>
-  props.language === "zh-en"
-    ? "Mandarin, English, or both mixed together."
-    : "Fastest and most accurate for English-only audio.",
+const descriptions = {
+  en: "Best for English-only recordings.",
+  zh: "For Chinese-only recordings.",
+  "zh-en": "For recordings with both English and Chinese.",
+};
+
+const description = computed(
+  () => descriptions[props.language] ?? descriptions.en,
 );
 </script>
 
@@ -29,7 +34,20 @@ const description = computed(() =>
         <p id="transcription-language-label" class="text-sm font-medium">
           Language
         </p>
-        <p class="text-xs text-muted-foreground">{{ description }}</p>
+        <p class="text-xs text-muted-foreground">
+          {{ description }}
+          <span v-if="language === 'zh'" class="whitespace-nowrap">
+            (Has English too?
+            <button
+              type="button"
+              :disabled="disabled"
+              class="underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
+              @click="emit('update:language', 'zh-en')"
+            >
+              Use Mixed</button
+            >.)
+          </span>
+        </p>
       </div>
       <SegmentedControl
         aria-labelledby="transcription-language-label"

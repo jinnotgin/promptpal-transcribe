@@ -27,7 +27,7 @@ export const useTranscriptionStore = defineStore("transcription", {
     /** @type {ExecutionEnv} */
     executionEnv: parseExecutionEnv(localStorage.getItem(STORAGE_KEY_ENV)),
     enableDiarization: true,
-    /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} "zh-en" uses SenseVoice instead of Parakeet */
+    /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} "zh" and "zh-en" use SenseVoice instead of Parakeet */
     transcriptionLanguage: normalizeTranscriptionLanguage(
       localStorage.getItem(STORAGE_KEY_LANGUAGE),
     ),

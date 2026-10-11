@@ -4,8 +4,9 @@
  * Speaks the same protocol as asrWorker.js (`init`, `process`, `cancel`;
  * replies `model-progress`, `model-loading`, `ready`, `diagnostics`,
  * `progress`, `partial`, `error`) so useAsrInference can drive either.
- * Language is auto-detected per chunk, which handles Mandarin with English
- * mixed in. Always WASM: the int8 graph's MatMulInteger has no WebGPU kernel.
+ * `init` takes the language hint: "zh" for Chinese-only audio, or "auto" to
+ * detect per chunk, which handles Mandarin with English mixed in. Always
+ * WASM: the int8 graph's MatMulInteger has no WebGPU kernel.
  */
 
 import * as ort from "onnxruntime-web";
@@ -29,8 +30,9 @@ let initAbortController = null;
 
 /**
  * @param {{ model: string, tokens: string }} assetKeys
+ * @param {string} [language] SenseVoice language hint
  */
-async function init(assetKeys) {
+async function init(assetKeys, language = "auto") {
   cancelled = false;
   initAbortController = new AbortController();
   const signal = initAbortController.signal;
@@ -60,7 +62,7 @@ async function init(assetKeys) {
     Tensor: ort.Tensor,
     metadata,
     symbols,
-    language: "auto",
+    language,
   });
   self.postMessage({ type: "model-loading", payload: { percent: 100 } });
 }
@@ -116,7 +118,7 @@ self.onmessage = async (e) => {
   switch (type) {
     case "init":
       try {
-        await init(payload.assetKeys);
+        await init(payload.assetKeys, payload.language);
         if (!cancelled) self.postMessage({ type: "ready" });
       } catch (err) {
         if (!cancelled) {

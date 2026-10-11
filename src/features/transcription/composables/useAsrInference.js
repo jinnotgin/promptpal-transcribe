@@ -36,13 +36,15 @@ export function useAsrInference(store) {
    * jump backwards once transcription has started.
    * @param {'webgpu' | 'wasm'} runtime
    * @param {import('@/features/transcription/lib/engineSelection').AsrSelection} [asrSelection]
-   *   defaults to Parakeet; SenseVoice (Chinese/English) always runs on WASM
+   *   defaults to Parakeet; SenseVoice (Chinese or mixed) always runs on WASM
    * @returns {Promise<void>}
    */
   function initialize(runtime, asrSelection) {
     rejectPending(new DOMException("Superseded", "AbortError"));
     cleanup();
     engine = asrSelection?.engine ?? "parakeet";
+    const senseVoiceLanguage =
+      asrSelection?.engine === "sensevoice" ? asrSelection.language : "auto";
     return new Promise((resolve, reject) => {
       const currentWorker =
         engine === "sensevoice"
@@ -110,6 +112,7 @@ export function useAsrInference(store) {
           engine === "sensevoice"
             ? {
                 runtime: "wasm",
+                language: senseVoiceLanguage,
                 assetKeys: {
                   model: "senseVoiceInt8",
                   tokens: "senseVoiceTokens",

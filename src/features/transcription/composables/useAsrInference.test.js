@@ -197,11 +197,15 @@ describe("useAsrInference window sessions", () => {
     asr.cleanup();
   });
 
-  it("starts the SenseVoice worker with its assets for Chinese/English", async () => {
+  it("starts the SenseVoice worker with its assets and language hint", async () => {
     const asr = useAsrInference(
       /** @type {any} */ ({ isCancelled: false, updateProgress: vi.fn() }),
     );
-    await asr.initialize("webgpu", { engine: "sensevoice", variant: "int8" });
+    await asr.initialize("webgpu", {
+      engine: "sensevoice",
+      variant: "int8",
+      language: "zh",
+    });
 
     const [worker] = FakeAsrWorker.instances;
     expect(worker.url).toContain("senseVoiceWorker");
@@ -209,6 +213,7 @@ describe("useAsrInference window sessions", () => {
       type: "init",
       payload: {
         runtime: "wasm",
+        language: "zh",
         assetKeys: { model: "senseVoiceInt8", tokens: "senseVoiceTokens" },
       },
     });
@@ -237,7 +242,11 @@ describe("useAsrInference window sessions", () => {
         updateProgress: vi.fn(),
       }),
     );
-    await asr.initialize("wasm", { engine: "sensevoice", variant: "int8" });
+    await asr.initialize("wasm", {
+      engine: "sensevoice",
+      variant: "int8",
+      language: "auto",
+    });
 
     await asr.transcribeWindow(
       new Float32Array(16000 * 12),
