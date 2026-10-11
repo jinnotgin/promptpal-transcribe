@@ -32,7 +32,7 @@ import {
   RefreshCw,
   RotateCcw,
   Plus,
-  ShieldCheck,
+  Lock,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -400,7 +400,7 @@ onMounted(async () => {
   } catch (error) {
     console.warn("[transcription] Could not reconcile staged audio:", error);
   }
-  document.title = `${APP_NAME} Transcribe`;
+  document.title = APP_NAME;
   trackAnalyticsEvent("page_navigation", {
     page_location: "transcribe_page",
   });
@@ -2175,12 +2175,10 @@ onUnmounted(() => {
           <template v-else>
             <!-- Headline -->
             <div v-if="!store.liveMode" :class="store.file ? 'mb-8' : 'mb-4'">
-              <h1 class="text-2xl font-semibold">
-                Turn your recordings into transcripts
-              </h1>
+              <h1 class="text-2xl font-semibold">What's said stays here.</h1>
               <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                 <p class="text-sm text-muted-foreground">
-                  Private, on-device transcription for voice memos and videos.
+                  Private transcription for voice memos, meetings and videos.
                 </p>
                 <span
                   v-if="!store.file"
@@ -2257,8 +2255,8 @@ onUnmounted(() => {
                   <span
                     class="flex items-center gap-1.5 text-xs text-muted-foreground"
                   >
-                    <ShieldCheck class="h-3.5 w-3.5 shrink-0" />
-                    Runs locally, nothing is uploaded
+                    <Lock class="h-3.5 w-3.5 shrink-0" />
+                    Stays on this device
                   </span>
                 </div>
 

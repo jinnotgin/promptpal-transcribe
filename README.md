@@ -1,8 +1,10 @@
-# PromptPal Transcribe
+# shhsaid
 
-PromptPal Transcribe is a private, browser-local transcription app for audio files, video files,
-and live microphone input. Media processing runs in Web Workers and source media is not uploaded to
-a transcription backend.
+_What's said stays here._
+
+shhsaid is a private, browser-local transcription app for audio files, video files, and live
+microphone input, in English or English and Chinese. Media processing runs in Web Workers and
+source media is not uploaded to a transcription backend.
 
 ## Routes
 
@@ -17,6 +19,17 @@ a transcription backend.
 npm install
 npm run dev
 ```
+
+## Deployment
+
+Set `VITE_SITE_URL` to the public site address when building so social previews (Open Graph and
+Twitter cards) use absolute URLs for the share image:
+
+```bash
+VITE_SITE_URL=https://example.com npm run build
+```
+
+Without it, the share tags use relative paths, which most social platforms ignore.
 
 ## Validation
 

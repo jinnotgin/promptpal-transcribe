@@ -20,9 +20,13 @@ provide("toast", toast);
           aria-hidden="true"
           class="h-6 w-6 shrink-0"
         />
-        <span class="flex min-w-0 items-baseline gap-1.5 truncate text-lg">
-          <span class="font-medium text-foreground">{{ APP_NAME }}</span>
-          <span class="font-normal text-[hsl(214_72%_46%)]">Transcribe</span>
+        <!-- Two-tone wordmark: a hushed "shh", then "said" in ink. -->
+        <span
+          class="truncate text-lg font-medium tracking-[-0.01em] text-foreground"
+          :aria-label="APP_NAME"
+        >
+          <span aria-hidden="true" class="text-[hsl(32_8%_62%)]">shh</span
+          ><span aria-hidden="true">said</span>
         </span>
         <span
           class="ml-0.5 shrink-0 rounded border border-foreground/25 px-1 py-0.5 text-[10px] font-medium uppercase leading-none text-muted-foreground"

@@ -1,6 +1,6 @@
 # Architecture
 
-PromptPal Transcribe is a Vue 3 single-page app with a transcription domain, a minimal shared UI
+shhsaid is a Vue 3 single-page app with a transcription domain, a minimal shared UI
 kernel, and dedicated Web Worker entrypoints.
 
 ```text
