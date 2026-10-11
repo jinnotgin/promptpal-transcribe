@@ -70,7 +70,7 @@ function stepCount(delta) {
       v-if="enabled && !isLarge"
       type="button"
       :disabled="disabled"
-      class="mt-2 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+      class="mt-2 text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
       @click="emit('update:scale', 'large')"
     >
       More than {{ GROUP_MAX_SPEAKERS }} people?
@@ -137,7 +137,7 @@ function stepCount(delta) {
       <button
         type="button"
         :disabled="disabled"
-        class="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
+        class="text-xs text-muted-foreground underline decoration-muted-foreground/40 underline-offset-2 transition-colors hover:text-foreground hover:decoration-foreground disabled:pointer-events-none disabled:opacity-50"
         @click="emit('update:scale', 'group')"
       >
         Back to automatic (up to {{ GROUP_MAX_SPEAKERS }})
