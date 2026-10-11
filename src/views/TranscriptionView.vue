@@ -19,6 +19,7 @@ import {
   ChevronRight,
   Download,
   FileAudio,
+  Globe,
   Loader2,
   Mic,
   MicOff,
@@ -35,11 +36,7 @@ import {
   ShieldCheck,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { AdaptivePopover } from "@/components/ui/adaptive-popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -126,9 +123,6 @@ const isSeekingWaveform = ref(false);
 const hoverPlaybackRatio = ref(null);
 const isSpeakerPanelOpen = ref(true);
 const isTranscriptCopied = ref(false);
-const isPrivacyNoteOpen = ref(false);
-const isPrivacyNoteHovered = ref(false);
-let privacyNoteCloseTimer = null;
 const isStoppingLive = ref(false);
 const isLiveRecordingExporting = ref(false);
 const liveRecordingExportProgress = liveRecordingMp3Export.progress;
@@ -1033,27 +1027,6 @@ async function handleClearCache() {
   });
 }
 
-function handlePrivacyNotePointerEnter(event) {
-  if (event.pointerType !== "mouse") return;
-  clearTimeout(privacyNoteCloseTimer);
-  isPrivacyNoteHovered.value = true;
-  isPrivacyNoteOpen.value = true;
-}
-
-function handlePrivacyNotePointerLeave(event) {
-  if (event.pointerType !== "mouse") return;
-  isPrivacyNoteHovered.value = false;
-  clearTimeout(privacyNoteCloseTimer);
-  privacyNoteCloseTimer = setTimeout(() => {
-    isPrivacyNoteOpen.value = false;
-  }, 150);
-}
-
-// A click while hovering would otherwise toggle the hover-opened note shut.
-function handlePrivacyNoteOpenChange(open) {
-  isPrivacyNoteOpen.value = open || isPrivacyNoteHovered.value;
-}
-
 async function handleCopyTranscript() {
   const success = await copyContent(formatPlainText(store.displaySegments));
   if (!success) {
@@ -1451,7 +1424,6 @@ onUnmounted(() => {
     void liveRecordingMp3Export.cancel();
   else void liveRecordingMp3Export.release();
   audioSeekCoordinator.cancelPendingSeek();
-  clearTimeout(privacyNoteCloseTimer);
   modelManager.abort();
   if (transcriptCopiedTimeoutId !== null) {
     window.clearTimeout(transcriptCopiedTimeoutId);
@@ -2210,12 +2182,28 @@ onUnmounted(() => {
                 <p class="text-sm text-muted-foreground">
                   Private transcription for voice memos, meetings and videos.
                 </p>
-                <span
-                  v-if="!store.file"
-                  class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
-                >
-                  English and Chinese
-                </span>
+                <AdaptivePopover v-if="!store.file">
+                  <template #trigger>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1.5 rounded-full border border-border bg-card py-0.5 pl-2 pr-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Globe class="h-3 w-3 shrink-0" aria-hidden="true" />
+                      <span class="inline-flex items-center gap-1">
+                        English
+                        <span
+                          class="mx-px h-2.5 w-px bg-muted-foreground/30"
+                          aria-hidden="true"
+                        />
+                        Chinese
+                      </span>
+                    </button>
+                  </template>
+                  <p>
+                    Transcribes English, Chinese, or both mixed in the same
+                    sentence. Pick the language before transcribing.
+                  </p>
+                </AdaptivePopover>
               </div>
             </div>
 
@@ -2282,35 +2270,22 @@ onUnmounted(() => {
                     <Mic class="h-4 w-4" />
                     Record live audio instead
                   </button>
-                  <Popover
-                    :open="isPrivacyNoteOpen"
-                    @update:open="handlePrivacyNoteOpenChange"
-                  >
-                    <PopoverTrigger asChild>
+                  <AdaptivePopover align="end">
+                    <template #trigger>
                       <button
                         type="button"
-                        class="flex cursor-pointer items-center gap-1.5 rounded-sm text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        @pointerenter="handlePrivacyNotePointerEnter"
-                        @pointerleave="handlePrivacyNotePointerLeave"
+                        class="flex items-center gap-1.5 rounded-sm text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <ShieldCheck class="h-3.5 w-3.5 shrink-0" />
                         Nothing leaves this device
                       </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      class="w-64 text-xs leading-relaxed"
-                      align="end"
-                      @open-auto-focus.prevent
-                      @pointerenter="handlePrivacyNotePointerEnter"
-                      @pointerleave="handlePrivacyNotePointerLeave"
-                    >
-                      <p>
-                        Your audio is transcribed right here on your device, not
-                        on a server. Recordings and transcripts are saved only
-                        here, too.
-                      </p>
-                    </PopoverContent>
-                  </Popover>
+                    </template>
+                    <p>
+                      Your audio is transcribed right here on your device, not
+                      on a server. Recordings and transcripts are saved only
+                      here, too.
+                    </p>
+                  </AdaptivePopover>
                 </div>
 
                 <!-- Recent transcripts -->
