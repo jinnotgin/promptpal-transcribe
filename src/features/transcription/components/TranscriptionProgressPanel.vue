@@ -12,7 +12,7 @@ const props = defineProps({
   enableDiarization: { type: Boolean, default: true },
   transcriptionProgress: { type: Number, default: 0 },
   diarizationProgress: { type: Number, default: 0 },
-  sortformerLoadProgress: { type: Number, default: 0 },
+  diarizationLoadProgress: { type: Number, default: 0 },
   cancelable: { type: Boolean, default: true },
 });
 
@@ -62,7 +62,7 @@ const currentProgress = computed(() => {
     props.phase === "downloading-diarization-model" ||
     props.phase === "loading-diarization-model"
   ) {
-    return props.sortformerLoadProgress;
+    return props.diarizationLoadProgress;
   }
   const progressMap = {
     "downloading-model": props.transcriptionProgress,

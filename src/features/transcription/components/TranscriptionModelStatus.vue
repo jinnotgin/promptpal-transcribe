@@ -3,11 +3,16 @@ import { computed } from "vue";
 import { CheckCircle2, Download, Circle } from "lucide-vue-next";
 
 const props = defineProps({
+  /** The diarizer the current speaker setting uses. */
+  diarizationEngine: {
+    type: /** @type {import('vue').PropType<'nemotron' | 'sherpa'>} */ (String),
+    default: "nemotron",
+  },
   parakeetCached: { type: Boolean, default: false },
-  sortformerCached: { type: Boolean, default: false },
+  diarizationCached: { type: Boolean, default: false },
   parakeetLoadProgress: { type: Number, default: 0 },
   parakeetIndeterminate: { type: Boolean, default: false },
-  sortformerLoadProgress: { type: Number, default: 0 },
+  diarizationLoadProgress: { type: Number, default: 0 },
 });
 
 const parakeetStatus = computed(() => {
@@ -20,12 +25,27 @@ const parakeetStatus = computed(() => {
   return "missing";
 });
 
-const sortformerStatus = computed(() => {
-  if (props.sortformerCached) return "cached";
-  if (props.sortformerLoadProgress > 0 && props.sortformerLoadProgress < 100)
+const diarizerStatus = computed(() => {
+  if (props.diarizationCached) return "cached";
+  if (props.diarizationLoadProgress > 0 && props.diarizationLoadProgress < 100)
     return "downloading";
   return "missing";
 });
+
+const DIARIZER_LINKS = {
+  nemotron: {
+    name: "NVIDIA Nemotron 3 Diarization",
+    href: "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+  },
+  sherpa: {
+    name: "sherpa-onnx pyannote + CAM++",
+    href: "https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/index.html",
+  },
+};
+
+const diarizerModel = computed(
+  () => DIARIZER_LINKS[props.diarizationEngine] ?? DIARIZER_LINKS.nemotron,
+);
 
 function statusIcon(status) {
   if (status === "cached") return CheckCircle2;
@@ -64,19 +84,19 @@ function statusColor(status) {
 
     <div class="flex items-start gap-2">
       <component
-        :is="statusIcon(sortformerStatus)"
+        :is="statusIcon(diarizerStatus)"
         class="mt-0.5 h-3.5 w-3.5 shrink-0"
-        :class="statusColor(sortformerStatus)"
+        :class="statusColor(diarizerStatus)"
       />
       <div class="min-w-0">
         <p class="text-xs text-foreground">
           <span class="font-medium">Diarizer model:</span>
           <a
-            href="https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1"
+            :href="diarizerModel.href"
             target="_blank"
             rel="noopener noreferrer"
             class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >NVIDIA Sortformer v2.1</a
+            >{{ diarizerModel.name }}</a
           >
         </p>
       </div>

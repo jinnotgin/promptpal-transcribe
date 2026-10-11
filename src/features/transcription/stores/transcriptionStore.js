@@ -1,5 +1,9 @@
 import { defineStore } from "pinia";
 import {
+  clampLargeGroupSpeakers,
+  selectTranscriptionEngines,
+} from "@/features/transcription/lib/engineSelection.js";
+import {
   SYSTEM_DEFAULT_MIC_ID,
   createSystemDefaultMic,
 } from "@/features/transcription/composables/useMicrophoneDevices.js";
@@ -8,9 +12,12 @@ import {
  * @typedef {'auto' | 'webgpu' | 'wasm'} ExecutionEnv
  * @typedef {'idle' | 'checking-cache' | 'downloading-model' | 'loading-model' | 'downloading-diarization-model' | 'loading-diarization-model' | 'transcoding' | 'vad' | 'transcribing' | 'diarizing' | 'complete' | 'error'} ProcessPhase
  * @typedef {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment} TranscriptSegment
+ * @typedef {'group' | 'large'} SpeakerScale
  */
 
 const STORAGE_KEY_ENV = "transcription-env";
+const STORAGE_KEY_SPEAKER_SCALE = "transcription-speaker-scale";
+const STORAGE_KEY_SPEAKER_COUNT = "transcription-speaker-count";
 
 export const useTranscriptionStore = defineStore("transcription", {
   state: () => ({
@@ -18,6 +25,14 @@ export const useTranscriptionStore = defineStore("transcription", {
     /** @type {ExecutionEnv} */
     executionEnv: parseExecutionEnv(localStorage.getItem(STORAGE_KEY_ENV)),
     enableDiarization: true,
+    /** @type {SpeakerScale} "large" uses the clustering diarizer for more than 8 speakers */
+    speakerScale: parseSpeakerScale(
+      localStorage.getItem(STORAGE_KEY_SPEAKER_SCALE),
+    ),
+    /** Expected number of speakers for a large group. */
+    speakerCount: parseSpeakerCount(
+      localStorage.getItem(STORAGE_KEY_SPEAKER_COUNT),
+    ),
 
     // --- Runtime detection ---
     webgpuAvailable: false,
@@ -66,10 +81,10 @@ export const useTranscriptionStore = defineStore("transcription", {
 
     // --- Model state ---
     parakeetCached: false,
-    sortformerCached: false,
+    diarizationCached: false,
     parakeetLoadProgress: 0,
     parakeetLoadIndeterminate: false,
-    sortformerLoadProgress: 0,
+    diarizationLoadProgress: 0,
 
     // --- Results ---
     /** @type {TranscriptSegment[]} */
@@ -103,6 +118,15 @@ export const useTranscriptionStore = defineStore("transcription", {
       }
       if (state.executionEnv === "wasm") return "wasm";
       return state.webgpuAvailable ? "webgpu" : "wasm";
+    },
+
+    /** @returns {import('@/features/transcription/lib/engineSelection').EngineSelection} */
+    engineSelection() {
+      return selectTranscriptionEngines({
+        speakerMode: this.enableDiarization ? this.speakerScale : "solo",
+        runtime: this.effectiveRuntime,
+        speakerCount: this.speakerCount,
+      });
     },
 
     /** @returns {TranscriptSegment[]} */
@@ -277,6 +301,21 @@ export const useTranscriptionStore = defineStore("transcription", {
       localStorage.setItem(STORAGE_KEY_ENV, env);
     },
 
+    /** @param {SpeakerScale} scale */
+    setSpeakerScale(scale) {
+      this.speakerScale = parseSpeakerScale(scale);
+      localStorage.setItem(STORAGE_KEY_SPEAKER_SCALE, this.speakerScale);
+    },
+
+    /** @param {number} count */
+    setSpeakerCount(count) {
+      this.speakerCount = clampLargeGroupSpeakers(Number(count));
+      localStorage.setItem(
+        STORAGE_KEY_SPEAKER_COUNT,
+        String(this.speakerCount),
+      );
+    },
+
     /** @param {boolean} enabled */
     setEnableDiarization(enabled) {
       this.enableDiarization = enabled;
@@ -359,6 +398,19 @@ export const useTranscriptionStore = defineStore("transcription", {
 /**
  * @typedef {ReturnType<typeof useTranscriptionStore>} TranscriptionStore
  */
+
+/**
+ * @param {string | null} value
+ * @returns {SpeakerScale}
+ */
+function parseSpeakerScale(value) {
+  return value === "large" ? "large" : "group";
+}
+
+/** @param {string | null} value */
+function parseSpeakerCount(value) {
+  return clampLargeGroupSpeakers(value == null ? undefined : Number(value));
+}
 
 /**
  * @param {string | null} value

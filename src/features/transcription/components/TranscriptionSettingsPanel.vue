@@ -19,13 +19,17 @@ import TranscriptionModelStatus from "./TranscriptionModelStatus.vue";
 
 const props = defineProps({
   executionEnv: { type: String, required: true },
+  diarizationEngine: {
+    type: /** @type {import('vue').PropType<'nemotron' | 'sherpa'>} */ (String),
+    default: "nemotron",
+  },
   effectiveRuntime: { type: String, required: true },
   isProcessing: { type: Boolean, default: false },
   parakeetCached: { type: Boolean, default: false },
-  sortformerCached: { type: Boolean, default: false },
+  diarizationCached: { type: Boolean, default: false },
   parakeetLoadProgress: { type: Number, default: 0 },
   parakeetIndeterminate: { type: Boolean, default: false },
-  sortformerLoadProgress: { type: Number, default: 0 },
+  diarizationLoadProgress: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(["update:executionEnv", "clearCache"]);
@@ -53,11 +57,12 @@ const runtimeDisplay = computed(() => {
         <div class="space-y-2">
           <Label class="text-xs">Models</Label>
           <TranscriptionModelStatus
+            :diarization-engine="diarizationEngine"
             :parakeet-cached="parakeetCached"
-            :sortformer-cached="sortformerCached"
+            :diarization-cached="diarizationCached"
             :parakeet-load-progress="parakeetLoadProgress"
             :parakeet-indeterminate="parakeetIndeterminate"
-            :sortformer-load-progress="sortformerLoadProgress"
+            :diarization-load-progress="diarizationLoadProgress"
           />
         </div>
 

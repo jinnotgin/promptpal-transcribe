@@ -9,6 +9,7 @@ import {
   getCommittedPcmView,
 } from "@/features/transcription/lib/audioWindowing.js";
 import { createWaveformAccumulator } from "@/features/transcription/lib/waveformAccumulator.js";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import { ref } from "vue";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
@@ -26,7 +27,9 @@ const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
  *   3. Run VAD to find speech regions
  *   4. Run ASR inference on each chunk
  *
- * Diarization runs as a lightweight local speaker-assignment pass.
+ * Diarization then assigns speakers in a second pass over committed audio:
+ * Nemotron for up to 8 speakers, or clustering into a user-given count for
+ * larger groups.
  *
  * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
  */
@@ -60,6 +63,18 @@ export function useTranscriptionPipeline(store) {
 
   function prepareCommittedWindow(window) {
     return prepare({ ...window, readStart: window.commitStart });
+  }
+
+  /**
+   * Engines for this run; reprocessing may override speaker identification.
+   * @param {boolean} enableDiarization
+   */
+  function selectEngines(enableDiarization) {
+    return selectTranscriptionEngines({
+      speakerMode: enableDiarization ? (store.speakerScale ?? "group") : "solo",
+      runtime: store.effectiveRuntime,
+      speakerCount: store.speakerCount,
+    });
   }
 
   function prepareUploadWindow(window) {
@@ -115,10 +130,12 @@ export function useTranscriptionPipeline(store) {
     store.error = null;
 
     const runtime = store.effectiveRuntime;
+    const selection = selectEngines(store.enableDiarization);
 
     trackAnalyticsEvent("transcription_started", {
       runtime,
-      diarizationEnabled: store.enableDiarization,
+      diarizationEngine: selection.diarization?.engine ?? null,
+      diarizationEnabled: Boolean(selection.diarization),
       fileSizeMb: Math.round((store.fileSize / (1024 * 1024)) * 10) / 10,
       estimatedDurationSec: store.fileDuration
         ? Math.round(store.fileDuration)
@@ -131,7 +148,7 @@ export function useTranscriptionPipeline(store) {
       // 1. Prepare the ASR model and file-backed FFmpeg session together so
       // sustainable preparation does not add serial startup latency.
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
+      await modelManager.checkCache(selection.assetKeys);
       const audioSessionPromise = audioPrep
         .open(store.file, store.fileDuration)
         .then((session) => {
@@ -167,8 +184,8 @@ export function useTranscriptionPipeline(store) {
 
       // Pre-download the diarization model alongside ASR models so the
       // diarization worker finds it cached and doesn't stall at stage 5.
-      if (store.enableDiarization) {
-        await modelManager.ensureDiarizationModel();
+      if (selection.diarization) {
+        await modelManager.ensureDiarizationModel(selection.assetKeys);
       }
 
       if (store.isCancelled) throw abort();
@@ -307,11 +324,11 @@ export function useTranscriptionPipeline(store) {
       }
       asr.cleanup();
 
-      if (store.enableDiarization) {
+      if (selection.diarization) {
         if (store.isCancelled) throw abort();
 
         store.processPhase = "diarizing";
-        await diarization.initialize(runtime);
+        await diarization.initialize(runtime, selection.diarization);
         // Diarization carries sequential speaker state, so unlike ASR it
         // consumes only committed ranges and never repeats boundary overlap.
         let diarizationPreparation = prepareCommittedWindow(windows[0]);
@@ -357,7 +374,8 @@ export function useTranscriptionPipeline(store) {
 
       trackAnalyticsEvent("transcription_completed", {
         runtime,
-        diarizationEnabled: store.enableDiarization,
+        diarizationEngine: selection.diarization?.engine ?? null,
+        diarizationEnabled: Boolean(selection.diarization),
         durationMs: Date.now() - startTime,
         segmentCount: transcriptRows.length,
       });
@@ -441,6 +459,7 @@ export function useTranscriptionPipeline(store) {
     const manifest = normalizeTranscriptAudioManifest(manifestValue);
     const enableDiarization = options.enableDiarization ?? true;
     const runtime = store.effectiveRuntime;
+    const selection = selectEngines(enableDiarization);
     const startTime = Date.now();
     store.clearProcessingState();
     store.segments = [];
@@ -451,9 +470,11 @@ export function useTranscriptionPipeline(store) {
 
     try {
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
+      await modelManager.checkCache(selection.assetKeys);
       await asr.initialize(runtime);
-      if (enableDiarization) await modelManager.ensureDiarizationModel();
+      if (selection.diarization) {
+        await modelManager.ensureDiarizationModel(selection.assetKeys);
+      }
       if (store.isCancelled) throw abort();
 
       let transcriptRows = [];
@@ -502,9 +523,9 @@ export function useTranscriptionPipeline(store) {
       if (!transcriptRows.length) throw new Error("ASR_EMPTY_RESULT");
       asr.cleanup();
 
-      if (enableDiarization) {
+      if (selection.diarization) {
         store.processPhase = "diarizing";
-        await diarization.initialize(runtime);
+        await diarization.initialize(runtime, selection.diarization);
         let diarizationIndex = 0;
         for (const part of manifest.parts) {
           const blob = await audioAssets.getPartBlob(transcriptId, part);
@@ -543,7 +564,8 @@ export function useTranscriptionPipeline(store) {
       store.processPhase = "complete";
       trackAnalyticsEvent("transcription_reprocess_completed", {
         runtime,
-        diarizationEnabled: enableDiarization,
+        diarizationEngine: selection.diarization?.engine ?? null,
+        diarizationEnabled: Boolean(selection.diarization),
         durationMs: Date.now() - startTime,
         segmentCount: transcriptRows.length,
       });

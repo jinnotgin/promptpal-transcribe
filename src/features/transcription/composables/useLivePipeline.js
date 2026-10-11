@@ -7,6 +7,7 @@ import {
   rebuildSegmentsFromWords,
   mergeAdjacentSegments,
 } from "@/features/transcription/lib/timestampStitching.js";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
 import { SYSTEM_DEFAULT_MIC_ID } from "@/features/transcription/composables/useMicrophoneDevices.js";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
@@ -91,7 +92,10 @@ export function useLivePipeline(store) {
         ? selectLiveRecordingProfile()
         : null;
       store.processPhase = "checking-cache";
-      await modelManager.checkCache();
+      // Live transcription does not identify speakers.
+      await modelManager.checkCache(
+        selectTranscriptionEngines({ speakerMode: "solo", runtime }).assetKeys,
+      );
       await asr.initialize(runtime);
 
       if (store.isCancelled) throw abortError();

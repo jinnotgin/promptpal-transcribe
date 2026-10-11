@@ -42,7 +42,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,6 +71,8 @@ import { createTranscriptAudioSeekCoordinator } from "@/features/transcription/l
 import TranscriptionDropZone from "@/features/transcription/components/TranscriptionDropZone.vue";
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
+import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
+import { selectTranscriptionEngines } from "@/features/transcription/lib/engineSelection.js";
 import TranscriptionProgressPanel from "@/features/transcription/components/TranscriptionProgressPanel.vue";
 import BrowserAdvisoryBanner from "@/features/transcription/components/BrowserAdvisoryBanner.vue";
 import LiveMicrophonePanel from "@/features/transcription/components/LiveMicrophonePanel.vue";
@@ -238,15 +239,18 @@ const prefetchModelProgress = computed(() => {
     100,
     Math.max(0, store.parakeetLoadProgress || 0),
   );
-  const sortformerProgress = Math.min(
+  const diarizationProgress = Math.min(
     100,
-    Math.max(0, store.sortformerLoadProgress || 0),
+    Math.max(0, store.diarizationLoadProgress || 0),
   );
   return (
-    (parakeetProgress * PREFETCH_ASR_ASSET_COUNT + sortformerProgress) /
+    (parakeetProgress * PREFETCH_ASR_ASSET_COUNT + diarizationProgress) /
     PREFETCH_TOTAL_ASSET_COUNT
   );
 });
+const prefetchDiarizationEngine = computed(() =>
+  store.speakerScale === "large" ? "sherpa" : "nemotron",
+);
 const hasHistory = computed(() => historySummaries.value.length > 0);
 const RECENT_TRANSCRIPT_LIMIT = 5;
 const recentSummaries = computed(() =>
@@ -363,6 +367,18 @@ const hoverSeekerStyle = computed(() => ({
   left: `${clampRatio(hoverPlaybackRatio.value) * 100}%`,
 }));
 
+/**
+ * Models to pre-download: the speaker setting's diarizer is included even
+ * when identification is off, since it defaults to on.
+ */
+function prefetchAssetKeys() {
+  return selectTranscriptionEngines({
+    speakerMode: store.speakerScale,
+    runtime: store.effectiveRuntime,
+    speakerCount: store.speakerCount,
+  }).assetKeys;
+}
+
 onMounted(async () => {
   try {
     await transcriptionAudioAssets.reconcileOrphans();
@@ -374,16 +390,18 @@ onMounted(async () => {
     page_location: "transcribe_page",
   });
   await refreshHistorySummaries();
-  await modelManager.checkCache();
+  await modelManager.checkCache(prefetchAssetKeys());
 
   // After cache state is known, start background model pre-download once
   // runtime detection resolves so the worker starts from cache on first use.
-  function startPrefetch() {
-    if (store.parakeetCached) return;
-    const promise = modelManager.ensureModelsReady(
-      store.effectiveRuntime,
-      true,
-    );
+  // Switching between up to 8 and more than 8 speakers re-runs it for the
+  // other diarizer.
+  async function startPrefetch() {
+    if (prefetchPromise.value) return;
+    const assetKeys = prefetchAssetKeys();
+    await modelManager.checkCache(assetKeys);
+    if (store.parakeetCached && store.diarizationCached) return;
+    const promise = modelManager.ensureModelsReady(assetKeys);
     prefetchPromise.value = promise;
     promise.then(
       () => {
@@ -394,6 +412,19 @@ onMounted(async () => {
       },
     );
   }
+  watch(
+    () => store.speakerScale,
+    async () => {
+      if (!store.detectedRuntime || store.isProcessing) return;
+      // Replace a prefetch for the previous diarizer's models.
+      const pending = prefetchPromise.value;
+      if (pending) {
+        modelManager.abort();
+        await pending.catch(() => {});
+      }
+      void startPrefetch();
+    },
+  );
   if (store.detectedRuntime) {
     // Runtime already known (e.g. returning to page — Pinia store persists).
     startPrefetch();
@@ -2079,13 +2110,14 @@ onUnmounted(() => {
       <div v-if="!store.isProcessing" class="absolute right-5 top-5 z-20">
         <TranscriptionSettingsPanel
           :execution-env="store.executionEnv"
+          :diarization-engine="prefetchDiarizationEngine"
           :effective-runtime="store.effectiveRuntime"
           :is-processing="store.isProcessing"
           :parakeet-cached="store.parakeetCached"
-          :sortformer-cached="store.sortformerCached"
+          :diarization-cached="store.diarizationCached"
           :parakeet-load-progress="store.parakeetLoadProgress"
           :parakeet-indeterminate="store.parakeetLoadIndeterminate"
-          :sortformer-load-progress="store.sortformerLoadProgress"
+          :diarization-load-progress="store.diarizationLoadProgress"
           @update:execution-env="store.setExecutionEnv($event)"
           @clear-cache="handleClearCache"
         />
@@ -2123,22 +2155,15 @@ onUnmounted(() => {
               <h1 class="text-2xl font-semibold">
                 Turn your recordings into transcripts
               </h1>
-              <p class="mt-2 text-sm text-muted-foreground">
-                Private, on-device transcription for voice memos and videos.
-              </p>
-              <div
-                v-if="!store.file"
-                class="mt-3 flex flex-wrap items-center gap-2"
-              >
+              <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p class="text-sm text-muted-foreground">
+                  Private, on-device transcription for voice memos and videos.
+                </p>
                 <span
+                  v-if="!store.file"
                   class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
                 >
                   English only
-                </span>
-                <span
-                  class="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-xs text-muted-foreground"
-                >
-                  Detects up to 4 speakers
                 </span>
               </div>
             </div>
@@ -2166,20 +2191,16 @@ onUnmounted(() => {
                 >
                   {{ preflightWarning }}
                 </div>
-                <div
-                  class="mt-8 flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-3"
-                >
-                  <div>
-                    <p class="text-sm font-medium">Speaker identification</p>
-                    <p class="text-xs text-muted-foreground">
-                      Identify and label speakers when possible.
-                    </p>
-                  </div>
-                  <Switch
-                    :model-value="store.enableDiarization"
-                    @update:model-value="store.setEnableDiarization($event)"
-                  />
-                </div>
+                <SpeakerIdentificationOptions
+                  class="mt-8"
+                  :enabled="store.enableDiarization"
+                  :scale="store.speakerScale"
+                  :count="store.speakerCount"
+                  :disabled="store.isProcessing"
+                  @update:enabled="store.setEnableDiarization($event)"
+                  @update:scale="store.setSpeakerScale($event)"
+                  @update:count="store.setSpeakerCount($event)"
+                />
                 <Button
                   class="mt-12 h-10 w-full"
                   :disabled="blocksTranscription || isAwaitingPrefetch"
@@ -2382,7 +2403,7 @@ onUnmounted(() => {
           phase="downloading-model"
           :enable-diarization="true"
           :transcription-progress="prefetchModelProgress"
-          :sortformer-load-progress="store.sortformerLoadProgress"
+          :diarization-load-progress="store.diarizationLoadProgress"
           :cancelable="true"
           @cancel="handleCancelPrefetchWait"
         />
@@ -2397,7 +2418,7 @@ onUnmounted(() => {
           :enable-diarization="isReprocessing ? true : store.enableDiarization"
           :transcription-progress="store.transcriptionProgress"
           :diarization-progress="store.diarizationProgress"
-          :sortformer-load-progress="store.sortformerLoadProgress"
+          :diarization-load-progress="store.diarizationLoadProgress"
           :cancelable="!isReprocessing"
           @cancel="handleCancel"
         />

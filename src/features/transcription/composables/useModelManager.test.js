@@ -57,10 +57,10 @@ vi.mock("@/features/transcription/lib/modelCache.js", () => ({
 function makeStore() {
   return /** @type {any} */ ({
     parakeetCached: false,
-    sortformerCached: false,
+    diarizationCached: false,
     parakeetLoadProgress: 0,
     parakeetLoadIndeterminate: false,
-    sortformerLoadProgress: 0,
+    diarizationLoadProgress: 0,
   });
 }
 
@@ -76,7 +76,12 @@ describe("useModelManager", () => {
     const store = makeStore();
     const manager = useModelManager(store);
 
-    const prefetch = manager.ensureModelsReady("webgpu", true);
+    const prefetch = manager.ensureModelsReady([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "sherpaSegmentation",
+    ]);
     await Promise.resolve();
 
     expect(downloadState.started).toEqual(["encoderFp16"]);
@@ -98,15 +103,15 @@ describe("useModelManager", () => {
         "encoderFp16",
         "decoder",
         "vocab",
-        "diarization",
+        "sherpaSegmentation",
       ]),
     );
-    downloadState.resolvers.get("diarization")?.(new ArrayBuffer(4));
+    downloadState.resolvers.get("sherpaSegmentation")?.(new ArrayBuffer(4));
 
     await expect(prefetch).resolves.toBeUndefined();
     expect(getOrDownloadModelAsset).toHaveBeenCalledTimes(4);
     expect(store.parakeetCached).toBe(false);
-    expect(store.sortformerCached).toBe(false);
+    expect(store.diarizationCached).toBe(false);
   });
 
   it("checks cache readiness from keys without reading model payloads", async () => {
@@ -114,22 +119,93 @@ describe("useModelManager", () => {
       "parakeet-encoder-fp16",
       "parakeet-decoder",
       "parakeet-vocab",
-      "sortformer-diarization",
+      "sherpa-pyannote-segmentation-3.0",
     ]);
     const store = makeStore();
 
-    await useModelManager(store).checkCache();
+    await useModelManager(store).checkCache([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "sherpaSegmentation",
+    ]);
 
     expect(store.parakeetCached).toBe(true);
-    expect(store.sortformerCached).toBe(true);
+    expect(store.diarizationCached).toBe(true);
     expect(listCachedModelKeys).toHaveBeenCalledOnce();
+  });
+
+  it("checks every selected asset, including the Nemotron data file", async () => {
+    vi.mocked(listCachedModelKeys).mockResolvedValue([
+      "parakeet-encoder-fp16",
+      "nemotron3-diarization-int8",
+      "nemotron3-diarization-int8-data",
+    ]);
+    const store = makeStore();
+
+    await useModelManager(store).checkCache([
+      "encoderFp16",
+      "vocab",
+      "nemotronInt8",
+      "nemotronInt8Data",
+    ]);
+
+    expect(store.parakeetCached).toBe(false);
+    expect(store.diarizationCached).toBe(true);
+  });
+
+  it("leaves diarizer status alone when only ASR assets are checked", async () => {
+    vi.mocked(listCachedModelKeys).mockResolvedValue([
+      "parakeet-encoder-int8",
+      "parakeet-decoder",
+      "parakeet-vocab",
+    ]);
+    const store = makeStore();
+    store.diarizationCached = true;
+
+    await useModelManager(store).checkCache([
+      "encoderInt8",
+      "decoder",
+      "vocab",
+    ]);
+
+    expect(store.parakeetCached).toBe(true);
+    expect(store.diarizationCached).toBe(true);
+  });
+
+  it("downloads only the selected diarizer's assets", async () => {
+    const store = makeStore();
+    const manager = useModelManager(store);
+    const pending = manager.ensureDiarizationModel([
+      "vocab",
+      "nemotronInt8",
+      "nemotronInt8Data",
+    ]);
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual(["nemotronInt8"]),
+    );
+    downloadState.resolvers.get("nemotronInt8")?.(new ArrayBuffer(1));
+    await vi.waitFor(() =>
+      expect(downloadState.started).toEqual([
+        "nemotronInt8",
+        "nemotronInt8Data",
+      ]),
+    );
+    downloadState.resolvers.get("nemotronInt8Data")?.(new ArrayBuffer(1));
+    await pending;
+    expect(store.diarizationCached).toBe(true);
   });
 
   it("reports aggregate ASR progress while keeping diarization progress separate", async () => {
     const store = makeStore();
     const manager = useModelManager(store);
 
-    const prefetch = manager.ensureModelsReady("webgpu", true);
+    const prefetch = manager.ensureModelsReady([
+      "encoderFp16",
+      "decoder",
+      "vocab",
+      "sherpaSegmentation",
+    ]);
     await Promise.resolve();
 
     downloadState.progressCallbacks.get("encoderFp16")?.({
@@ -159,10 +235,10 @@ describe("useModelManager", () => {
     });
     downloadState.resolvers.get("vocab")?.(new ArrayBuffer(1));
     await vi.waitFor(() =>
-      expect(downloadState.started).toContain("diarization"),
+      expect(downloadState.started).toContain("sherpaSegmentation"),
     );
-    downloadState.progressCallbacks.get("diarization")?.({
-      assetKey: "diarization",
+    downloadState.progressCallbacks.get("sherpaSegmentation")?.({
+      assetKey: "sherpaSegmentation",
       percent: 25,
       receivedBytes: 1,
       totalBytes: 4,
@@ -170,9 +246,9 @@ describe("useModelManager", () => {
     });
 
     expect(store.parakeetLoadProgress).toBe(50);
-    expect(store.sortformerLoadProgress).toBe(25);
+    expect(store.diarizationLoadProgress).toBe(25);
 
-    downloadState.resolvers.get("diarization")?.(new ArrayBuffer(1));
+    downloadState.resolvers.get("sherpaSegmentation")?.(new ArrayBuffer(1));
     await prefetch;
   });
 });

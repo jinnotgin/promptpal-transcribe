@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   continuousFinalize: vi.fn(),
   continuousCancel: vi.fn(),
   vadCalls: 0,
+  checkCache: vi.fn(),
+  ensureDiarizationModel: vi.fn(),
+  diarizationInit: vi.fn(),
 }));
 
 vi.mock(
@@ -39,8 +42,8 @@ vi.mock("./useStreamingWebmEncoder.js", () => ({
 
 vi.mock("./useModelManager.js", () => ({
   useModelManager: () => ({
-    checkCache: vi.fn().mockResolvedValue(undefined),
-    ensureDiarizationModel: vi.fn().mockResolvedValue(undefined),
+    checkCache: mocks.checkCache,
+    ensureDiarizationModel: mocks.ensureDiarizationModel,
     abort: vi.fn(),
   }),
 }));
@@ -112,7 +115,7 @@ vi.mock("./useAsrInference.js", () => ({
 
 vi.mock("./useDiarization.js", () => ({
   useDiarization: () => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: mocks.diarizationInit,
     processWindow: vi.fn().mockResolvedValue(undefined),
     finalize: vi.fn(async (segments) => segments),
     abort: vi.fn(),
@@ -129,6 +132,8 @@ function makeStore() {
     fileDuration: 620,
     effectiveRuntime: "wasm",
     enableDiarization: false,
+    speakerScale: "group",
+    speakerCount: 10,
     isCancelled: false,
     segments: [],
     waveformSamples: [],
@@ -170,6 +175,9 @@ describe("useTranscriptionPipeline uploaded media", () => {
       ],
     });
     mocks.continuousCancel.mockResolvedValue(undefined);
+    mocks.checkCache.mockResolvedValue(undefined);
+    mocks.ensureDiarizationModel.mockResolvedValue(undefined);
+    mocks.diarizationInit.mockResolvedValue(undefined);
   });
 
   it("uses one bounded pipeline for every window and prepares only one look-ahead", async () => {
@@ -194,6 +202,55 @@ describe("useTranscriptionPipeline uploaded media", () => {
 
     expect(mocks.readStarts).toEqual([0, 297, 597, 0, 300, 600]);
     expect(store.processPhase).toBe("complete");
+  });
+
+  it("identifies up to 8 speakers with Nemotron by default", async () => {
+    const store = makeStore();
+    store.enableDiarization = true;
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.ensureDiarizationModel).toHaveBeenCalledWith(
+      expect.arrayContaining(["nemotronInt8", "nemotronInt8Data"]),
+    );
+    expect(mocks.diarizationInit).toHaveBeenCalledWith("wasm", {
+      engine: "nemotron",
+      variant: "int8",
+      maxSpeakers: 8,
+    });
+  });
+
+  it("clusters large groups into the requested number of speakers", async () => {
+    const store = makeStore();
+    store.enableDiarization = true;
+    store.speakerScale = "large";
+    store.speakerCount = 12;
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.ensureDiarizationModel).toHaveBeenCalledWith(
+      expect.arrayContaining(["sherpaSegmentation", "sherpaEmbedding"]),
+    );
+    expect(mocks.diarizationInit).toHaveBeenCalledWith("wasm", {
+      engine: "sherpa",
+      variant: "campplus",
+      numSpeakers: 12,
+    });
+    expect(store.processPhase).toBe("complete");
+  });
+
+  it("skips speaker models when identification is off", async () => {
+    const store = makeStore();
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(mocks.checkCache).toHaveBeenCalledWith([
+      "encoderInt8",
+      "decoder",
+      "vocab",
+    ]);
+    expect(mocks.ensureDiarizationModel).not.toHaveBeenCalled();
+    expect(mocks.diarizationInit).not.toHaveBeenCalled();
   });
 
   it("persists one continuous WebM/Opus asset from committed upload ranges when supported", async () => {

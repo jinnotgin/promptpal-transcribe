@@ -1,5 +1,12 @@
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
 
+/** @type {import('@/features/transcription/lib/engineSelection').DiarizationSelection} */
+const DEFAULT_SELECTION = {
+  engine: "nemotron",
+  variant: "int8",
+  maxSpeakers: 8,
+};
+
 /**
  * Runs lightweight local diarization in a worker and assigns speaker labels.
  * @param {import('@/features/transcription/stores/transcriptionStore').TranscriptionStore} store
@@ -11,19 +18,31 @@ export function useDiarization(store) {
   /** @type {Map<number, { resolve: (value: any) => void, reject: (reason?: unknown) => void }>} */
   const pending = new Map();
 
-  /** @param {'webgpu' | 'wasm'} runtime */
-  async function initialize(runtime) {
+  /**
+   * @param {'webgpu' | 'wasm'} runtime
+   * @param {import('@/features/transcription/lib/engineSelection').DiarizationSelection} [selection]
+   */
+  async function initialize(runtime, selection = DEFAULT_SELECTION) {
     cleanup();
-    worker = new Worker(
-      new URL("@/workers/diarizationWorker.js", import.meta.url),
-      {
-        type: "module",
-      },
-    );
+    worker =
+      selection.engine === "sherpa"
+        ? new Worker(
+            new URL("@/workers/sherpaDiarizationWorker.js", import.meta.url),
+            { type: "module" },
+          )
+        : new Worker(
+            new URL("@/workers/nemotronDiarizationWorker.js", import.meta.url),
+            { type: "module" },
+          );
     worker.onmessage = handleMessage;
     worker.onerror = handleWorkerError;
     worker.onmessageerror = handleMessageError;
-    await request("init", { runtime });
+    await request(
+      "init",
+      selection.engine === "sherpa"
+        ? { runtime, numSpeakers: selection.numSpeakers }
+        : { runtime },
+    );
   }
 
   /**
@@ -53,10 +72,11 @@ export function useDiarization(store) {
   /**
    * @param {Float32Array} pcm
    * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]} segments
+   * @param {import('@/features/transcription/lib/engineSelection').DiarizationSelection} [selection]
    * @returns {Promise<import('@/features/transcription/lib/transcriptionDb').TranscriptSegment[]>}
    */
-  async function diarize(pcm, segments) {
-    await initialize(store.effectiveRuntime);
+  async function diarize(pcm, segments, selection) {
+    await initialize(store.effectiveRuntime, selection);
     await processWindow(pcm, { windowIndex: 0, totalWindows: 1 });
     return await finalize(segments);
   }
@@ -69,7 +89,7 @@ export function useDiarization(store) {
     }
     if (type === "model-progress") {
       if (payload.percent != null)
-        store.sortformerLoadProgress = payload.percent;
+        store.diarizationLoadProgress = payload.percent;
       return;
     }
     if (requestId == null) return;

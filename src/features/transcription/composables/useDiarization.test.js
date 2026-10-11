@@ -5,7 +5,8 @@ class FakeDiarizationWorker {
   static instances = [];
   static autoRespond = true;
 
-  constructor() {
+  constructor(url) {
+    this.url = String(url);
     this.onmessage = null;
     this.onerror = null;
     this.onmessageerror = null;
@@ -49,7 +50,7 @@ describe("useDiarization window sessions", () => {
     const diarization = useDiarization(
       /** @type {any} */ ({
         updateProgress: vi.fn(),
-        sortformerLoadProgress: 0,
+        diarizationLoadProgress: 0,
       }),
     );
     await diarization.initialize("wasm");
@@ -82,7 +83,7 @@ describe("useDiarization window sessions", () => {
     const diarization = useDiarization(
       /** @type {any} */ ({
         updateProgress: vi.fn(),
-        sortformerLoadProgress: 0,
+        diarizationLoadProgress: 0,
       }),
     );
     await diarization.initialize("wasm");
@@ -106,6 +107,46 @@ describe("useDiarization window sessions", () => {
       }),
     ).resolves.toBeUndefined();
     expect(FakeDiarizationWorker.instances).toHaveLength(2);
+    diarization.abort();
+  });
+
+  it("runs the Nemotron worker by default", async () => {
+    const diarization = useDiarization(
+      /** @type {any} */ ({
+        updateProgress: vi.fn(),
+        diarizationLoadProgress: 0,
+      }),
+    );
+    await diarization.initialize("wasm");
+
+    const worker = FakeDiarizationWorker.instances[0];
+    expect(worker.url).toContain("nemotronDiarizationWorker");
+    expect(worker.messages[0]).toMatchObject({
+      type: "init",
+      payload: { runtime: "wasm" },
+    });
+    diarization.abort();
+  });
+
+  it("runs the large-group worker with the requested speaker count", async () => {
+    const diarization = useDiarization(
+      /** @type {any} */ ({
+        updateProgress: vi.fn(),
+        diarizationLoadProgress: 0,
+      }),
+    );
+    await diarization.initialize("webgpu", {
+      engine: "sherpa",
+      variant: "campplus",
+      numSpeakers: 12,
+    });
+
+    const worker = FakeDiarizationWorker.instances[0];
+    expect(worker.url).toContain("sherpaDiarizationWorker");
+    expect(worker.messages[0]).toMatchObject({
+      type: "init",
+      payload: { runtime: "webgpu", numSpeakers: 12 },
+    });
     diarization.abort();
   });
 });

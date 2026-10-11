@@ -1,7 +1,4 @@
-import {
-  MODEL_ASSETS,
-  getRequiredAssetKeys,
-} from "@/features/transcription/lib/modelUrls.js";
+import { MODEL_ASSETS } from "@/features/transcription/lib/modelUrls.js";
 import {
   clearCachedModels,
   getCachedModel,
@@ -10,8 +7,23 @@ import {
   listCachedModelKeys,
 } from "@/features/transcription/lib/modelCache.js";
 
+const DEFAULT_ASSET_KEYS = [
+  "encoderFp16",
+  "decoder",
+  "vocab",
+  "nemotronInt8",
+  "nemotronInt8Data",
+];
+
+/** @param {string} key */
+function isDiarizationAsset(key) {
+  return MODEL_ASSETS[key]?.runtime === "diarization";
+}
+
 /**
  * Manages model cache status and optional pre-downloads.
+ * `parakeet*` store fields track the ASR assets and `diarization*` fields
+ * the selected diarizer's.
  * ASR transcription itself loads model buffers inside the ASR worker so the
  * main thread does not own large ONNX ArrayBuffers during processing.
  *
@@ -21,21 +33,21 @@ export function useModelManager(store) {
   /** @type {AbortController | null} */
   let abortController = null;
 
-  async function checkCache() {
+  /**
+   * @param {string[]} [assetKeys] the selected engines' assets
+   */
+  async function checkCache(assetKeys = DEFAULT_ASSET_KEYS) {
     try {
-      const keys = new Set(await listCachedModelKeys());
-
-      const parakeetKeys = [
-        "parakeet-encoder-fp16",
-        "parakeet-encoder-int8",
-        "parakeet-decoder",
-        "parakeet-vocab",
-      ];
-      store.parakeetCached =
-        parakeetKeys.some((key) => keys.has(key)) &&
-        keys.has("parakeet-decoder") &&
-        keys.has("parakeet-vocab");
-      store.sortformerCached = keys.has("sortformer-diarization");
+      const cached = new Set(await listCachedModelKeys());
+      const isCached = (/** @type {string} */ key) =>
+        cached.has(MODEL_ASSETS[key]?.cacheKey);
+      const asrKeys = assetKeys.filter((key) => !isDiarizationAsset(key));
+      const diarizationKeys = assetKeys.filter(isDiarizationAsset);
+      store.parakeetCached = asrKeys.length > 0 && asrKeys.every(isCached);
+      // Speaker identification off: keep the last diarizer status.
+      if (diarizationKeys.length) {
+        store.diarizationCached = diarizationKeys.every(isCached);
+      }
     } catch (err) {
       console.warn("Failed to check model cache:", err);
     }
@@ -45,17 +57,23 @@ export function useModelManager(store) {
    * Download a single model asset with progress reporting.
    * @param {string} assetKey
    * @param {AbortSignal} signal
-   * @returns {Promise<ArrayBuffer>}
+   * Streams into the cache without keeping the bytes on the main thread;
+   * workers read their models back from the cache.
    */
   async function downloadAsset(
     assetKey,
     signal,
     onAssetProgress = reportAssetProgress,
   ) {
-    return await getOrDownloadModelAsset(assetKey, signal, ({ percent }) => {
-      if (percent != null) onAssetProgress(assetKey, percent);
-      else store.parakeetLoadIndeterminate = true;
-    });
+    await getOrDownloadModelAsset(
+      assetKey,
+      signal,
+      ({ percent }) => {
+        if (percent != null) onAssetProgress(assetKey, percent);
+        else store.parakeetLoadIndeterminate = true;
+      },
+      { keepBytes: false },
+    );
   }
 
   /**
@@ -66,7 +84,7 @@ export function useModelManager(store) {
     const asset = MODEL_ASSETS[assetKey];
     if (!asset) return;
     if (asset.runtime === "diarization") {
-      store.sortformerLoadProgress = percent;
+      store.diarizationLoadProgress = percent;
     } else {
       store.parakeetLoadIndeterminate = false;
       store.parakeetLoadProgress = percent;
@@ -91,7 +109,7 @@ export function useModelManager(store) {
 
       progressByKey.set(assetKey, Math.min(100, Math.max(0, percent)));
       if (asset.runtime === "diarization") {
-        store.sortformerLoadProgress = progressByKey.get(assetKey) || 0;
+        store.diarizationLoadProgress = progressByKey.get(assetKey) || 0;
         return;
       }
 
@@ -111,14 +129,12 @@ export function useModelManager(store) {
   /**
    * Optional pre-download helper for settings/cache UI. Transcription does not
    * call this for ASR because workers own model loading during processing.
-   * @param {'webgpu' | 'wasm'} runtime
-   * @param {boolean} diarization
+   * @param {string[]} requiredKeys the selected engines' assets
    * @returns {Promise<void>}
    */
-  async function ensureModelsReady(runtime, diarization) {
+  async function ensureModelsReady(requiredKeys) {
     abortController = new AbortController();
     const signal = abortController.signal;
-    const requiredKeys = getRequiredAssetKeys(runtime, diarization);
     const reportPrefetchProgress = createPrefetchProgressReporter(requiredKeys);
 
     for (const key of requiredKeys) {
@@ -128,7 +144,7 @@ export function useModelManager(store) {
 
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    await checkCache();
+    await checkCache(requiredKeys);
   }
 
   /**
@@ -144,37 +160,51 @@ export function useModelManager(store) {
   async function clearModelCache() {
     await clearCachedModels();
     store.parakeetCached = false;
-    store.sortformerCached = false;
+    store.diarizationCached = false;
     store.parakeetLoadProgress = 0;
     store.parakeetLoadIndeterminate = false;
-    store.sortformerLoadProgress = 0;
+    store.diarizationLoadProgress = 0;
   }
 
   /**
-   * Pre-download the diarization (Sortformer) model so it is cached before
-   * the diarization worker needs it. Sets `processPhase` to reflect whether
-   * the model is being downloaded or loaded from cache.
+   * Pre-download the selected diarizer's assets so they are cached before the
+   * diarization worker needs them. Sets `processPhase` to reflect whether the
+   * model is being downloaded or loaded from cache.
+   * @param {string[]} [assetKeys] the selected engines' assets
    */
-  async function ensureDiarizationModel() {
+  async function ensureDiarizationModel(assetKeys = DEFAULT_ASSET_KEYS) {
     abortController = abortController || new AbortController();
     const signal = abortController.signal;
-    if (await hasCachedModel(MODEL_ASSETS.diarization.cacheKey)) {
-      store.processPhase = "loading-diarization-model";
-      store.sortformerLoadProgress = 100;
-      store.sortformerCached = true;
-      return;
-    }
-    await getOrDownloadModelAsset("diarization", signal, (progress) => {
-      if (progress.source === "cache") {
+    const keys = assetKeys.filter(isDiarizationAsset);
+    const progressByKey = new Map(keys.map((key) => [key, 0]));
+    for (const key of keys) {
+      if (await hasCachedModel(MODEL_ASSETS[key].cacheKey)) {
         store.processPhase = "loading-diarization-model";
-      } else {
-        store.processPhase = "downloading-diarization-model";
+        progressByKey.set(key, 100);
+        continue;
       }
-      if (progress.percent != null) {
-        store.sortformerLoadProgress = progress.percent;
-      }
-    });
-    store.sortformerCached = true;
+      await getOrDownloadModelAsset(
+        key,
+        signal,
+        (progress) => {
+          store.processPhase =
+            progress.source === "cache"
+              ? "loading-diarization-model"
+              : "downloading-diarization-model";
+          if (progress.percent != null) {
+            progressByKey.set(key, progress.percent);
+            store.diarizationLoadProgress =
+              [...progressByKey.values()].reduce(
+                (sum, value) => sum + value,
+                0,
+              ) / progressByKey.size;
+          }
+        },
+        { keepBytes: false },
+      );
+    }
+    store.diarizationLoadProgress = 100;
+    store.diarizationCached = true;
   }
 
   function abort() {
