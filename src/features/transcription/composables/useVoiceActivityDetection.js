@@ -19,7 +19,9 @@ export function useVoiceActivityDetection() {
   /**
    * Transfer a bounded PCM window to VAD and receive the same buffer back.
    * @param {Float32Array} pcm
-   * @returns {Promise<{ regions: Array<{ start: number, end: number, preChunked?: boolean }>, pcm: Float32Array }>}
+   * `regions` are padded 90 s transcription windows; `speech` are the raw VAD
+   * utterances, used by engines that need short chunks.
+   * @returns {Promise<{ regions: Array<{ start: number, end: number, preChunked?: boolean }>, speech: Array<{ start: number, end: number }>, pcm: Float32Array }>}
    */
   function detectWindow(pcm) {
     const buffer =
@@ -53,6 +55,7 @@ export function useVoiceActivityDetection() {
             cleanup();
             resolve({
               regions: payload.regions,
+              speech: payload.speech ?? [],
               pcm: new Float32Array(payload.pcmData),
             });
             break;

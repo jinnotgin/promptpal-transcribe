@@ -24,13 +24,15 @@ const CHUNK_PADDING_SECONDS = 3;
 const ENABLE_TRANSCRIPTION_DIAGNOSTICS = import.meta.env.DEV;
 
 /**
- * Detect speech regions in 16kHz mono audio.
+ * Detect speech in 16kHz mono audio.
  * @param {Float32Array} pcm
  * @param {(percent: number) => void} [onProgress]
- * @returns {Promise<SpeechRegion[]>}
+ * @returns {Promise<{ regions: SpeechRegion[], speech: SpeechRegion[] }>}
+ *   `regions`: padded, pre-merged transcription chunks (up to 90 s);
+ *   `speech`: the raw utterances they were built from, in time order.
  */
-export async function detectSpeechRegions(pcm, onProgress) {
-  if (!pcm.length) return [];
+export async function detectSpeech(pcm, onProgress) {
+  if (!pcm.length) return { regions: [], speech: [] };
 
   await initTranscriptProcessingCore(
     "/wasm/transcript-processing-core_bg.wasm",
@@ -75,7 +77,29 @@ export async function detectSpeechRegions(pcm, onProgress) {
     });
   }
 
-  return chunks.map((chunk) => ({ ...chunk, preChunked: true }));
+  return {
+    regions: chunks.map((chunk) => ({ ...chunk, preChunked: true })),
+    speech: mergeOverlappingRegions(rawRegions),
+  };
+}
+
+/**
+ * Raw regions from overlapping VAD windows can repeat or overlap.
+ * @param {SpeechRegion[]} regions
+ * @returns {SpeechRegion[]}
+ */
+export function mergeOverlappingRegions(regions) {
+  /** @type {SpeechRegion[]} */
+  const merged = [];
+  for (const region of [...regions].sort((a, b) => a.start - b.start)) {
+    const previous = merged[merged.length - 1];
+    if (previous && region.start <= previous.end) {
+      previous.end = Math.max(previous.end, region.end);
+    } else {
+      merged.push({ start: region.start, end: region.end });
+    }
+  }
+  return merged;
 }
 
 async function createVad() {

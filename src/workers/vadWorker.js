@@ -7,11 +7,11 @@
  *     { type: "cancel" }
  *
  *   Worker → Main:
- *     { type: "complete", payload: { regions: Array<{ start: number, end: number }> } }
+ *     { type: "complete", payload: { regions: Array<{ start: number, end: number }>, speech: Array<{ start: number, end: number }> } }
  *     { type: "error", payload: { code: string, message: string } }
  */
 
-import { detectSpeechRegions } from "@/features/transcription/lib/vadSignal.js";
+import { detectSpeech } from "@/features/transcription/lib/vadSignal.js";
 
 let cancelled = false;
 const workerScope =
@@ -27,13 +27,13 @@ self.onmessage = async (e) => {
       cancelled = false;
       try {
         const pcm = new Float32Array(payload.pcmData);
-        const regions = await detectSpeechRegions(pcm);
+        const { regions, speech } = await detectSpeech(pcm);
 
         if (!cancelled) {
           workerScope.postMessage(
             {
               type: "complete",
-              payload: { regions, pcmData: payload.pcmData },
+              payload: { regions, speech, pcmData: payload.pcmData },
             },
             [payload.pcmData],
           );

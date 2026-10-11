@@ -20,6 +20,7 @@ class FakeVadWorker {
           type: "complete",
           payload: {
             regions: [{ start: 1, end: 2 }],
+            speech: [{ start: 1.2, end: 1.8 }],
             pcmData: message.payload.pcmData,
           },
         },
@@ -47,6 +48,7 @@ describe("useVoiceActivityDetection", () => {
     const result = await vad.detectWindow(pcm);
 
     expect(result.regions).toEqual([{ start: 1, end: 2 }]);
+    expect(result.speech).toEqual([{ start: 1.2, end: 1.8 }]);
     expect(result.pcm).toEqual(new Float32Array([0, 0.25, 0.5]));
   });
 

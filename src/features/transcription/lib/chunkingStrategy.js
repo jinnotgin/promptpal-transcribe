@@ -115,3 +115,108 @@ export function extractChunkAudio(pcm, chunk) {
   const endSample = Math.min(Math.round(chunk.end * SAMPLE_RATE), pcm.length);
   return pcm.slice(startSample, endSample);
 }
+
+/**
+ * Chunk limits for SenseVoice. It is accurate on sentence-length input but
+ * drops words past ~15 s and garbles Chinese/English switching past ~20 s,
+ * so chunks follow VAD utterances: neighbours separated by short pauses are
+ * grouped up to `targetDuration`, and continuous speech is cut at its
+ * quietest point so no chunk exceeds `maxDuration`. Chunks never overlap.
+ */
+export const UTTERANCE_CHUNK_LIMITS = Object.freeze({
+  targetDuration: 8,
+  maxDuration: 12,
+  minSplitDuration: 4,
+  maxGap: 1,
+  padding: 0.2,
+});
+
+const QUIET_WINDOW_SECONDS = 0.1;
+const QUIET_HOP_SECONDS = 0.05;
+
+/**
+ * @param {SpeechRegion[]} speech raw VAD speech regions (not pre-chunked)
+ * @param {Float32Array} pcm 16 kHz mono audio the regions refer to
+ * @param {Partial<typeof UTTERANCE_CHUNK_LIMITS>} [options]
+ * @returns {AsrChunk[]}
+ */
+export function splitIntoUtteranceChunks(speech, pcm, options = {}) {
+  const limits = { ...UTTERANCE_CHUNK_LIMITS, ...options };
+  const audioDuration = pcm.length / SAMPLE_RATE;
+  const pieceCap = limits.maxDuration - 2 * limits.padding;
+
+  /** @type {Array<{ start: number, end: number }>} */
+  const pieces = [];
+  const regions = speech
+    .map((region) => ({
+      start: Math.max(0, region.start),
+      end: Math.min(audioDuration, region.end),
+    }))
+    .filter((region) => region.end > region.start)
+    .sort((a, b) => a.start - b.start);
+  for (const region of regions) {
+    let start = region.start;
+    while (region.end - start > pieceCap) {
+      const cut = findQuietestPoint(
+        pcm,
+        start + limits.minSplitDuration,
+        start + pieceCap,
+      );
+      pieces.push({ start, end: cut });
+      start = cut;
+    }
+    pieces.push({ start, end: region.end });
+  }
+
+  /** @type {Array<{ start: number, end: number }>} */
+  const groups = [];
+  for (const piece of pieces) {
+    const current = groups[groups.length - 1];
+    if (
+      current &&
+      piece.start - current.end <= limits.maxGap &&
+      piece.end - current.start <= limits.targetDuration
+    ) {
+      current.end = piece.end;
+    } else {
+      groups.push({ ...piece });
+    }
+  }
+
+  /** @type {AsrChunk[]} */
+  const chunks = [];
+  groups.forEach((group, index) => {
+    const previousEnd = chunks[chunks.length - 1]?.end ?? 0;
+    const nextStart = groups[index + 1]?.start ?? audioDuration;
+    chunks.push({
+      start: Math.max(previousEnd, group.start - limits.padding),
+      end: Math.min(nextStart, group.end + limits.padding),
+      regionIndex: index,
+    });
+  });
+  return chunks;
+}
+
+/**
+ * Centre of the lowest-energy 100 ms window between `from` and `to`.
+ * @param {Float32Array} pcm
+ * @param {number} from seconds
+ * @param {number} to seconds
+ */
+function findQuietestPoint(pcm, from, to) {
+  const window = Math.round(QUIET_WINDOW_SECONDS * SAMPLE_RATE);
+  const hop = Math.round(QUIET_HOP_SECONDS * SAMPLE_RATE);
+  const first = Math.round(from * SAMPLE_RATE);
+  const last = Math.round(to * SAMPLE_RATE) - window;
+  let bestStart = Math.max(first, last);
+  let bestEnergy = Infinity;
+  for (let start = first; start <= last; start += hop) {
+    let energy = 0;
+    for (let i = start; i < start + window; i += 1) energy += pcm[i] * pcm[i];
+    if (energy < bestEnergy) {
+      bestEnergy = energy;
+      bestStart = start;
+    }
+  }
+  return (bestStart + window / 2) / SAMPLE_RATE;
+}
