@@ -17,28 +17,15 @@ import {
  */
 
 const STORAGE_KEY_ENV = "transcription-env";
-const STORAGE_KEY_SPEAKER_SCALE = "transcription-speaker-scale";
-const STORAGE_KEY_SPEAKER_COUNT = "transcription-speaker-count";
-const STORAGE_KEY_LANGUAGE = "transcription-language";
 
 export const useTranscriptionStore = defineStore("transcription", {
   state: () => ({
     // --- Settings (persisted to localStorage) ---
     /** @type {ExecutionEnv} */
     executionEnv: parseExecutionEnv(localStorage.getItem(STORAGE_KEY_ENV)),
-    enableDiarization: true,
-    /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} "zh" and "zh-en" use SenseVoice instead of Parakeet */
-    transcriptionLanguage: normalizeTranscriptionLanguage(
-      localStorage.getItem(STORAGE_KEY_LANGUAGE),
-    ),
-    /** @type {SpeakerScale} "large" uses the clustering diarizer for more than 8 speakers */
-    speakerScale: parseSpeakerScale(
-      localStorage.getItem(STORAGE_KEY_SPEAKER_SCALE),
-    ),
-    /** Expected number of speakers for a large group. */
-    speakerCount: parseSpeakerCount(
-      localStorage.getItem(STORAGE_KEY_SPEAKER_COUNT),
-    ),
+
+    // --- Per-recording options (reset for every file and page load) ---
+    ...defaultRecordingOptions(),
 
     // --- Runtime detection ---
     webgpuAvailable: false,
@@ -180,7 +167,7 @@ export const useTranscriptionStore = defineStore("transcription", {
       this.fileName = file.name;
       this.fileSize = file.size;
       this.fileDuration = null;
-      this.enableDiarization = true;
+      Object.assign(this, defaultRecordingOptions());
       this.error = null;
       this.segments = [];
       this.speakerNames = {};
@@ -311,22 +298,16 @@ export const useTranscriptionStore = defineStore("transcription", {
     /** @param {SpeakerScale} scale */
     setSpeakerScale(scale) {
       this.speakerScale = parseSpeakerScale(scale);
-      localStorage.setItem(STORAGE_KEY_SPEAKER_SCALE, this.speakerScale);
     },
 
     /** @param {string} language */
     setTranscriptionLanguage(language) {
       this.transcriptionLanguage = normalizeTranscriptionLanguage(language);
-      localStorage.setItem(STORAGE_KEY_LANGUAGE, this.transcriptionLanguage);
     },
 
     /** @param {number} count */
     setSpeakerCount(count) {
       this.speakerCount = clampLargeGroupSpeakers(Number(count));
-      localStorage.setItem(
-        STORAGE_KEY_SPEAKER_COUNT,
-        String(this.speakerCount),
-      );
     },
 
     /** @param {boolean} enabled */
@@ -420,9 +401,20 @@ function parseSpeakerScale(value) {
   return value === "large" ? "large" : "group";
 }
 
-/** @param {string | null} value */
-function parseSpeakerCount(value) {
-  return clampLargeGroupSpeakers(value == null ? undefined : Number(value));
+/**
+ * Language and speaker options are chosen per recording, so every new file
+ * and page load starts from English with automatic identification (up to 8).
+ */
+function defaultRecordingOptions() {
+  return {
+    enableDiarization: true,
+    /** @type {import('@/features/transcription/lib/engineSelection').TranscriptionLanguage} "zh" and "zh-en" use SenseVoice instead of Parakeet */
+    transcriptionLanguage: normalizeTranscriptionLanguage(null),
+    /** @type {SpeakerScale} "large" uses the clustering diarizer for more than 8 speakers */
+    speakerScale: /** @type {SpeakerScale} */ ("group"),
+    /** Expected number of speakers for a large group. */
+    speakerCount: clampLargeGroupSpeakers(undefined),
+  };
 }
 
 /**

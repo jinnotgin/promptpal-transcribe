@@ -37,7 +37,7 @@ describe("speaker identification settings", () => {
     expect(store.engineSelection.diarization).toBeNull();
   });
 
-  it("selects the large-group diarizer with a persisted speaker count", () => {
+  it("selects the large-group diarizer for the chosen speaker count", () => {
     const store = useTranscriptionStore();
     expect(store.speakerCount).toBe(10);
     store.setSpeakerScale("large");
@@ -49,22 +49,24 @@ describe("speaker identification settings", () => {
     });
     store.setSpeakerCount(400);
     expect(store.speakerCount).toBe(26);
+  });
+
+  it("does not remember speaker settings across reloads", () => {
+    localStorage.setItem("transcription-speaker-scale", "large");
+    localStorage.setItem("transcription-speaker-count", "14");
+    const store = useTranscriptionStore();
+    store.setEnableDiarization(false);
+    store.setSpeakerScale("large");
+    store.setSpeakerCount(20);
 
     setActivePinia(createPinia());
     const reloaded = useTranscriptionStore();
-    expect(reloaded.speakerScale).toBe("large");
-    expect(reloaded.speakerCount).toBe(26);
+    expect(reloaded.enableDiarization).toBe(true);
+    expect(reloaded.speakerScale).toBe("group");
+    expect(reloaded.speakerCount).toBe(10);
   });
 
-  it("ignores unknown persisted values", () => {
-    localStorage.setItem("transcription-speaker-scale", "huge");
-    localStorage.setItem("transcription-speaker-count", "abc");
-    const store = useTranscriptionStore();
-    expect(store.speakerScale).toBe("group");
-    expect(store.speakerCount).toBe(10);
-  });
-
-  it("persists the transcription language and picks SenseVoice for Chinese/English", () => {
+  it("picks SenseVoice for Chinese and mixed recordings", () => {
     const store = useTranscriptionStore();
     expect(store.transcriptionLanguage).toBe("en");
     store.setTranscriptionLanguage("zh-en");
@@ -75,13 +77,30 @@ describe("speaker identification settings", () => {
     });
     store.setTranscriptionLanguage("zh");
     expect(store.engineSelection.asr).toMatchObject({ language: "zh" });
+  });
+
+  it("does not remember the transcription language across reloads", () => {
+    localStorage.setItem("transcription-language", "zh");
+    const store = useTranscriptionStore();
+    expect(store.transcriptionLanguage).toBe("en");
     store.setTranscriptionLanguage("zh-en");
 
     setActivePinia(createPinia());
-    expect(useTranscriptionStore().transcriptionLanguage).toBe("zh-en");
-
-    localStorage.setItem("transcription-language", "klingon");
-    setActivePinia(createPinia());
     expect(useTranscriptionStore().transcriptionLanguage).toBe("en");
+  });
+
+  it("resets language and speaker settings when a new file is chosen", () => {
+    const store = useTranscriptionStore();
+    store.setTranscriptionLanguage("zh");
+    store.setEnableDiarization(false);
+    store.setSpeakerScale("large");
+    store.setSpeakerCount(20);
+
+    store.setFile(new File(["audio"], "next.mp3", { type: "audio/mpeg" }));
+
+    expect(store.transcriptionLanguage).toBe("en");
+    expect(store.enableDiarization).toBe(true);
+    expect(store.speakerScale).toBe("group");
+    expect(store.speakerCount).toBe(10);
   });
 });
