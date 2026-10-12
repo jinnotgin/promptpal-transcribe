@@ -29,8 +29,7 @@ export const CHANGELOG = [
     changes: [
       {
         lead: "Nothing leaves your device.",
-        detail:
-          "Audio is transcribed in your browser and never uploaded. There's no account or sign-in.",
+        detail: "Audio is transcribed in your browser and never uploaded.",
       },
       {
         lead: "Upload a recording or use the microphone,",

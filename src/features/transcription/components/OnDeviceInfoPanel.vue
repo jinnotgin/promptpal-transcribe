@@ -64,8 +64,8 @@ const emit = defineEmits(["update:open", "update:executionEnv", "clearCache"]);
         <div>
           <p class="text-sm font-medium">Nothing leaves this device</p>
           <p class="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            Audio is transcribed here, not on a server. Recordings and
-            transcripts are saved only in this browser.
+            Audio is transcribed right here in your browser. Recordings and
+            transcripts are saved only on this device.
           </p>
         </div>
       </div>
