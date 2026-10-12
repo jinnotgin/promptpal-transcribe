@@ -1,8 +1,8 @@
 {
   "hosting": {
-    "site": "shhsay",
+    "site": "shhsaid",
     "public": "dist",
-    "predeploy": ["VITE_SITE_URL=https://shhsay.web.app npm run build"],
+    "predeploy": ["VITE_SITE_URL=https://shhsaid.web.app npm run build"],
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [{ "source": "**", "destination": "/index.html" }],
     "headers": [
