@@ -66,6 +66,7 @@ import { isChromeBrowser } from "@/features/transcription/lib/hardwareCapabiliti
 import { APP_NAME } from "@/lib/config.js";
 import { copyContent, formatDate } from "@/lib/utils.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
+import { useMediaQuery } from "@/lib/useMediaQuery.js";
 import {
   formatPlainText,
   transcriptBaseName,
@@ -77,6 +78,7 @@ import TranscriptionHistoryList from "@/features/transcription/components/Transc
 import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
 import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
 import TranscriptionLanguageOptions from "@/features/transcription/components/TranscriptionLanguageOptions.vue";
+import ReprocessOptionsPopover from "@/features/transcription/components/ReprocessOptionsPopover.vue";
 import {
   normalizeSpeakerOptions,
   normalizeTranscriptionLanguage,
@@ -1034,6 +1036,18 @@ function openReprocessOptions() {
   isReprocessOptionsOpen.value = true;
 }
 
+// Phones offer reprocessing from the toolbar; wider screens use the banner.
+const isNarrowScreen = useMediaQuery("(max-width: 639px)");
+const showReprocessOffer = computed(
+  () => canReprocess.value && !isReprocessing.value,
+);
+
+/** @param {boolean} open */
+function setReprocessOptionsOpen(open) {
+  if (open) openReprocessOptions();
+  else isReprocessOptionsOpen.value = false;
+}
+
 async function handleReprocess() {
   if (!activeAudioManifest.value || !activeTranscriptId.value) return;
   const options = { ...reprocessOptions };
@@ -1519,6 +1533,28 @@ onUnmounted(() => {
         </label>
 
         <div class="flex shrink-0 items-center gap-2">
+          <ReprocessOptionsPopover
+            v-if="showReprocessOffer && isNarrowScreen"
+            v-bind="reprocessOptions"
+            :open="isReprocessOptionsOpen"
+            @update:open="setReprocessOptionsOpen"
+            @update:language="
+              reprocessOptions.language = normalizeTranscriptionLanguage($event)
+            "
+            @update:enable-diarization="
+              reprocessOptions.enableDiarization = $event
+            "
+            @update:speaker-scale="reprocessOptions.speakerScale = $event"
+            @update:speaker-count="reprocessOptions.speakerCount = $event"
+            @reprocess="handleReprocess"
+          >
+            <template #trigger>
+              <Button variant="outline" size="sm" class="h-9 px-3 text-sm">
+                <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
+                Reprocess
+              </Button>
+            </template>
+          </ReprocessOptionsPopover>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -1582,7 +1618,7 @@ onUnmounted(() => {
 
       <!-- Reprocess banner for live recordings -->
       <div
-        v-if="canReprocess"
+        v-if="showReprocessOffer && !isNarrowScreen"
         class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-5 py-2.5"
       >
         <div
@@ -1594,55 +1630,27 @@ onUnmounted(() => {
             identification.</span
           >
         </div>
-        <div v-if="!isReprocessOptionsOpen" class="flex items-center gap-3">
-          <Button
-            size="sm"
-            class="h-8 px-3 text-xs"
-            :disabled="isReprocessing"
-            @click="openReprocessOptions"
-          >
-            <RefreshCw v-if="!isReprocessing" class="mr-1.5 h-3 w-3" />
-            <Loader2 v-else class="mr-1.5 h-3 w-3 animate-spin" />
-            Reprocess
-          </Button>
-        </div>
-        <div v-else class="flex w-full flex-col gap-3 pb-1">
-          <TranscriptionLanguageOptions
-            :language="reprocessOptions.language"
-            :disabled="isReprocessing"
-            @update:language="
-              reprocessOptions.language = normalizeTranscriptionLanguage($event)
-            "
-          />
-          <SpeakerIdentificationOptions
-            :enabled="reprocessOptions.enableDiarization"
-            :scale="reprocessOptions.speakerScale"
-            :count="reprocessOptions.speakerCount"
-            :disabled="isReprocessing"
-            @update:enabled="reprocessOptions.enableDiarization = $event"
-            @update:scale="reprocessOptions.speakerScale = $event"
-            @update:count="reprocessOptions.speakerCount = $event"
-          />
-          <div class="flex justify-end gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              class="h-8 px-3 text-xs"
-              @click="isReprocessOptionsOpen = false"
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              class="h-8 px-3 text-xs"
-              :disabled="isReprocessing"
-              @click="handleReprocess"
-            >
+        <ReprocessOptionsPopover
+          v-bind="reprocessOptions"
+          :open="isReprocessOptionsOpen"
+          @update:open="setReprocessOptionsOpen"
+          @update:language="
+            reprocessOptions.language = normalizeTranscriptionLanguage($event)
+          "
+          @update:enable-diarization="
+            reprocessOptions.enableDiarization = $event
+          "
+          @update:speaker-scale="reprocessOptions.speakerScale = $event"
+          @update:speaker-count="reprocessOptions.speakerCount = $event"
+          @reprocess="handleReprocess"
+        >
+          <template #trigger>
+            <Button size="sm" class="h-8 px-3 text-xs">
               <RefreshCw class="mr-1.5 h-3 w-3" />
               Reprocess
             </Button>
-          </div>
-        </div>
+          </template>
+        </ReprocessOptionsPopover>
       </div>
 
       <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">

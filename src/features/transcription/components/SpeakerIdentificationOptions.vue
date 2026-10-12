@@ -14,6 +14,8 @@ const props = defineProps({
   scale: { type: String, default: "group" },
   count: { type: Number, default: LARGE_GROUP_SPEAKERS.default },
   disabled: { type: Boolean, default: false },
+  /** Drop the card frame and keep the switch beside the label, for popovers. */
+  compact: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(["update:enabled", "update:scale", "update:count"]);
@@ -41,9 +43,14 @@ function stepCount(delta) {
 </script>
 
 <template>
-  <div class="rounded-md border border-border bg-card px-3 py-3">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
+  <div
+    :class="{ 'rounded-md border border-border bg-card px-3 py-3': !compact }"
+  >
+    <div
+      class="flex items-center justify-between gap-3"
+      :class="compact ? 'flex-nowrap' : 'flex-wrap'"
+    >
+      <div class="min-w-0">
         <p id="speaker-identification-label" class="text-sm font-medium">
           Speaker identification
         </p>
