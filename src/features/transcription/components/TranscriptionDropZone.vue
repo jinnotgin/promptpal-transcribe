@@ -2,6 +2,7 @@
 import { ref, computed } from "vue";
 import { Upload, FileAudio, X, FileVideo } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
+import { useMediaQuery } from "@/lib/useMediaQuery.js";
 
 const ACCEPTED_AUDIO = [
   "audio/mpeg",
@@ -32,6 +33,8 @@ const props = defineProps({
 const emit = defineEmits(["fileSelected", "clear"]);
 
 const isDragOver = ref(false);
+// Touch screens can't drag files in, so speak to tapping instead.
+const isTouchScreen = useMediaQuery("(pointer: coarse)");
 const fileInputRef = ref(null);
 
 const isVideo = computed(() => {
@@ -109,7 +112,7 @@ function openFilePicker() {
     <!-- Drop zone -->
     <div
       v-else
-      class="flex min-h-[196px] w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 shadow-sm transition-colors"
+      class="flex min-h-[160px] w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center shadow-sm transition-colors sm:min-h-[196px] sm:py-10"
       :class="
         isDragOver
           ? 'border-primary bg-primary/10 text-foreground'
@@ -120,10 +123,18 @@ function openFilePicker() {
         class="mb-3 h-9 w-9 text-muted-foreground/50"
         :class="{ 'text-primary': isDragOver }"
       />
-      <p class="text-base font-semibold">Drop an audio or video file here</p>
-      <p class="mt-1 text-sm text-muted-foreground">
-        or click to browse. MP3, WAV, M4A, MP4, MOV, and more.
-      </p>
+      <template v-if="isTouchScreen">
+        <p class="text-base font-semibold">Choose an audio or video file</p>
+        <p class="mt-1 text-sm text-muted-foreground">
+          Tap to browse. MP3, WAV, M4A, MP4, MOV, and more.
+        </p>
+      </template>
+      <template v-else>
+        <p class="text-base font-semibold">Drop an audio or video file here</p>
+        <p class="mt-1 text-sm text-muted-foreground">
+          or click to browse. MP3, WAV, M4A, MP4, MOV, and more.
+        </p>
+      </template>
     </div>
 
     <input

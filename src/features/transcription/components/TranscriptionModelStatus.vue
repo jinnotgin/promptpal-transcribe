@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
-import { CheckCircle2, Download, Circle } from "lucide-vue-next";
+import { CheckCircle2, Circle, Download } from "lucide-vue-next";
+import { describeModelStatus } from "@/features/transcription/lib/onDeviceInfo.js";
 
 const props = defineProps({
   /** The speech-to-text engine the current language setting uses. */
@@ -34,22 +35,20 @@ const asrModel = computed(() =>
       },
 );
 
-const parakeetStatus = computed(() => {
-  if (props.parakeetCached) return "cached";
-  if (
-    props.parakeetIndeterminate ||
-    (props.parakeetLoadProgress > 0 && props.parakeetLoadProgress < 100)
-  )
-    return "downloading";
-  return "missing";
-});
+const asrStatus = computed(() =>
+  describeModelStatus({
+    cached: props.parakeetCached,
+    progress: props.parakeetLoadProgress,
+    indeterminate: props.parakeetIndeterminate,
+  }),
+);
 
-const diarizerStatus = computed(() => {
-  if (props.diarizationCached) return "cached";
-  if (props.diarizationLoadProgress > 0 && props.diarizationLoadProgress < 100)
-    return "downloading";
-  return "missing";
-});
+const diarizerStatus = computed(() =>
+  describeModelStatus({
+    cached: props.diarizationCached,
+    progress: props.diarizationLoadProgress,
+  }),
+);
 
 const DIARIZER_LINKS = {
   nemotron: {
@@ -66,59 +65,61 @@ const diarizerModel = computed(
   () => DIARIZER_LINKS[props.diarizationEngine] ?? DIARIZER_LINKS.nemotron,
 );
 
-function statusIcon(status) {
-  if (status === "cached") return CheckCircle2;
-  if (status === "downloading") return Download;
+const models = computed(() => [
+  { role: "Speech to text", ...asrModel.value, status: asrStatus.value },
+  {
+    role: "Speaker detection",
+    ...diarizerModel.value,
+    status: diarizerStatus.value,
+  },
+]);
+
+/** @param {string} state */
+function statusIcon(state) {
+  if (state === "ready") return CheckCircle2;
+  if (state === "downloading") return Download;
   return Circle;
 }
 
-function statusColor(status) {
-  if (status === "cached") return "text-green-600";
-  if (status === "downloading") return "text-primary animate-pulse";
+/** @param {string} state */
+function statusColor(state) {
+  if (state === "ready") return "text-green-600";
+  if (state === "downloading") return "text-primary animate-pulse";
   return "text-muted-foreground/40";
 }
 </script>
 
 <template>
-  <div class="space-y-3">
-    <div class="flex items-start gap-2">
+  <ul class="space-y-3">
+    <li v-for="model in models" :key="model.role" class="flex gap-2.5">
       <component
-        :is="statusIcon(parakeetStatus)"
-        class="mt-0.5 h-3.5 w-3.5 shrink-0"
-        :class="statusColor(parakeetStatus)"
+        :is="statusIcon(model.status.state)"
+        class="mt-0.5 h-4 w-4 shrink-0"
+        :class="statusColor(model.status.state)"
+        aria-hidden="true"
       />
-      <div class="min-w-0">
-        <p class="text-xs text-foreground">
-          <span class="font-medium">STT model:</span>
-          <a
-            :href="asrModel.href"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >{{ asrModel.name }}</a
+      <div class="min-w-0 flex-1">
+        <a
+          :href="model.href"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="block text-sm font-medium leading-5 text-foreground underline-offset-2 hover:underline"
+          >{{ model.name }}</a
+        >
+        <p class="mt-0.5 text-xs text-muted-foreground">
+          {{ model.role
+          }}<template v-if="model.status.label">
+            <span aria-hidden="true" class="mx-1 text-muted-foreground/50"
+              >·</span
+            ><span
+              :class="{
+                'text-primary': model.status.state === 'downloading',
+              }"
+              >{{ model.status.label }}</span
+            ></template
           >
         </p>
       </div>
-    </div>
-
-    <div class="flex items-start gap-2">
-      <component
-        :is="statusIcon(diarizerStatus)"
-        class="mt-0.5 h-3.5 w-3.5 shrink-0"
-        :class="statusColor(diarizerStatus)"
-      />
-      <div class="min-w-0">
-        <p class="text-xs text-foreground">
-          <span class="font-medium">Diarizer model:</span>
-          <a
-            :href="diarizerModel.href"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="ml-2 break-words text-primary underline-offset-2 hover:underline"
-            >{{ diarizerModel.name }}</a
-          >
-        </p>
-      </div>
-    </div>
-  </div>
+    </li>
+  </ul>
 </template>

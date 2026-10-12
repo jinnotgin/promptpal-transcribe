@@ -2,9 +2,7 @@
 import { provide } from "vue";
 import { RouterView } from "vue-router";
 import { Toaster, useToast } from "@/components/ui/toast";
-import { APP_NAME, APP_VERSION } from "@/lib/config.js";
-import { formatVersion } from "@/lib/utils.js";
-import AppChangelog from "@/app/AppChangelog.vue";
+import { APP_NAME } from "@/lib/config.js";
 
 const { toast } = useToast();
 provide("toast", toast);
@@ -36,25 +34,12 @@ provide("toast", toast);
           Beta
         </span>
       </div>
+      <!-- Routed views teleport their header actions here. -->
+      <div id="app-header-actions" class="ml-auto flex items-center gap-1" />
     </header>
     <main class="flex min-h-0 flex-1 flex-col">
       <RouterView />
     </main>
-    <footer
-      class="flex shrink-0 items-center justify-between border-t border-border bg-card px-4 py-2 text-xs text-muted-foreground sm:px-5"
-    >
-      <span>
-        Made by
-        <a
-          href="https://itsjin.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="font-medium text-foreground underline underline-offset-2 hover:text-primary"
-          >Jin</a
-        >
-      </span>
-      <AppChangelog :version="formatVersion(APP_VERSION)" />
-    </footer>
     <Toaster />
   </div>
 </template>

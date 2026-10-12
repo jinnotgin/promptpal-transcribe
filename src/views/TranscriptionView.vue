@@ -53,6 +53,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import ConfirmDestructiveButton from "@/components/ConfirmDestructiveButton.vue";
+import AppFooter from "@/app/AppFooter.vue";
 import { useTranscriptionStore } from "@/features/transcription/stores/transcriptionStore";
 import { useRuntimeDetection } from "@/features/transcription/composables/useRuntimeDetection";
 import { useModelManager } from "@/features/transcription/composables/useModelManager";
@@ -77,7 +78,7 @@ import { findAudioPartAtTime } from "@/features/transcription/lib/transcriptAudi
 import { createTranscriptAudioSeekCoordinator } from "@/features/transcription/lib/transcriptAudioSeek.js";
 import TranscriptionDropZone from "@/features/transcription/components/TranscriptionDropZone.vue";
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
-import TranscriptionSettingsPanel from "@/features/transcription/components/TranscriptionSettingsPanel.vue";
+import OnDeviceInfoPanel from "@/features/transcription/components/OnDeviceInfoPanel.vue";
 import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
 import TranscriptionLanguageOptions from "@/features/transcription/components/TranscriptionLanguageOptions.vue";
 import ReprocessOptionsPopover from "@/features/transcription/components/ReprocessOptionsPopover.vue";
@@ -122,6 +123,26 @@ const historySummaries = ref(
 );
 const isLoadingHistory = ref(false);
 const searchQuery = ref("");
+/** Phones collapse transcript search to an icon until it is opened. */
+const isTranscriptSearchOpen = ref(false);
+const transcriptSearchInputRef = ref(
+  /** @type {HTMLInputElement | null} */ (null),
+);
+const isOnDeviceInfoOpen = ref(false);
+const onDeviceInfoProps = computed(() => ({
+  executionEnv: store.executionEnv,
+  asrEngine: /** @type {'parakeet' | 'sensevoice'} */ (prefetchAsrEngine.value),
+  diarizationEngine: /** @type {'nemotron' | 'sherpa'} */ (
+    prefetchDiarizationEngine.value
+  ),
+  effectiveRuntime: store.effectiveRuntime,
+  isProcessing: store.isProcessing,
+  parakeetCached: store.parakeetCached,
+  diarizationCached: store.diarizationCached,
+  parakeetLoadProgress: store.parakeetLoadProgress,
+  parakeetIndeterminate: store.parakeetLoadIndeterminate,
+  diarizationLoadProgress: store.diarizationLoadProgress,
+}));
 const audioRef = ref(null);
 const waveformTrackRef = ref(null);
 const segmentRowRefs = new Map();
@@ -249,6 +270,10 @@ const showDropZone = computed(
       store.processPhase !== "complete" &&
       store.processPhase !== "error" &&
       !store.isListening),
+);
+/** The start screen's headline, which hosts the settings button. */
+const showsStartHeadline = computed(
+  () => showDropZone.value && !isBrowsingHistory.value && !store.liveMode,
 );
 const prefetchModelProgress = computed(() => {
   const parakeetProgress = Math.min(
@@ -580,6 +605,7 @@ function resetWorkingTranscriptState() {
   isLiveRecordingResult.value = false;
   hasReprocessedLiveRecording.value = false;
   searchQuery.value = "";
+  isTranscriptSearchOpen.value = false;
   playbackProgress.value = 0;
   currentPlaybackTime.value = 0;
   isAudioPlaying.value = false;
@@ -868,6 +894,7 @@ async function syncTranscriptionRoute() {
   await hydrateFromRecord(record);
   activeTranscriptId.value = record.id;
   searchQuery.value = "";
+  isTranscriptSearchOpen.value = false;
   playbackProgress.value = 0;
   currentPlaybackTime.value = 0;
   isAudioPlaying.value = false;
@@ -1067,6 +1094,31 @@ const showReprocessToolbarButton = computed(
 function setReprocessOptionsOpen(open) {
   if (open) openReprocessOptions();
   else isReprocessOptionsOpen.value = false;
+}
+
+// On phones, Reprocess lives in the "More" menu. Open its popover only after
+// the menu has closed, or the menu's focus return would dismiss it.
+let shouldReprocessAfterMoreMenu = false;
+function handleReprocessFromMoreMenu() {
+  shouldReprocessAfterMoreMenu = true;
+}
+/** @param {Event} event */
+function handleMoreMenuCloseAutoFocus(event) {
+  if (!shouldReprocessAfterMoreMenu) return;
+  shouldReprocessAfterMoreMenu = false;
+  event.preventDefault();
+  setReprocessOptionsOpen(true);
+}
+
+async function openTranscriptSearch() {
+  isTranscriptSearchOpen.value = true;
+  await nextTick();
+  transcriptSearchInputRef.value?.focus();
+}
+
+function closeTranscriptSearch() {
+  isTranscriptSearchOpen.value = false;
+  searchQuery.value = "";
 }
 
 async function handleReprocess() {
@@ -1527,117 +1579,203 @@ onUnmounted(() => {
 
 <template>
   <TooltipProvider :delay-duration="120">
+    <!-- The start screen shows settings beside its headline; other screens
+         put them in the app header. -->
+    <Teleport to="#app-header-actions" defer>
+      <OnDeviceInfoPanel
+        v-if="!showsStartHeadline"
+        v-model:open="isOnDeviceInfoOpen"
+        v-bind="onDeviceInfoProps"
+        @update:execution-env="store.setExecutionEnv($event)"
+        @clear-cache="handleClearCache"
+      />
+    </Teleport>
     <div
       v-if="showTranscriptResult"
       class="flex min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-muted text-foreground"
     >
       <header
-        class="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-5 py-3"
+        class="relative flex min-h-14 shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2.5 sm:min-h-16 sm:flex-wrap sm:gap-3 sm:px-5 sm:py-3"
       >
-        <Button
-          variant="outline"
-          size="sm"
-          class="h-9 rounded-md px-3 text-sm"
-          @click="handleStartOver"
+        <!-- Phones: search takes over the toolbar while it is open. -->
+        <template
+          v-if="isNarrowScreen && (isTranscriptSearchOpen || searchQuery)"
         >
-          <ChevronLeft class="mr-0.5 h-4 w-4" />
-          Back
-        </Button>
-
-        <label class="relative min-w-[220px] flex-1">
-          <Search
-            class="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground"
-          />
-          <input
-            v-model="searchQuery"
-            type="search"
-            class="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm outline-none focus:border-primary"
-            placeholder="Search transcript"
-          />
-        </label>
-
-        <div class="flex shrink-0 items-center gap-2">
-          <ReprocessOptionsPopover
-            v-if="showReprocessToolbarButton"
-            v-bind="reprocessOptions"
-            :open="isReprocessOptionsOpen"
-            @update:open="setReprocessOptionsOpen"
-            @update:language="
-              reprocessOptions.language = normalizeTranscriptionLanguage($event)
-            "
-            @update:enable-diarization="
-              reprocessOptions.enableDiarization = $event
-            "
-            @update:speaker-scale="reprocessOptions.speakerScale = $event"
-            @update:speaker-count="reprocessOptions.speakerCount = $event"
-            @reprocess="handleReprocess"
+          <label class="relative min-w-0 flex-1">
+            <Search
+              class="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground"
+            />
+            <input
+              ref="transcriptSearchInputRef"
+              v-model="searchQuery"
+              type="search"
+              class="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-base outline-none focus:border-primary"
+              placeholder="Search transcript"
+              @keydown.escape="closeTranscriptSearch"
+            />
+          </label>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-9 w-9 shrink-0"
+            @click="closeTranscriptSearch"
           >
-            <template #trigger>
-              <Button variant="outline" size="sm" class="h-9 px-3 text-sm">
-                <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
-                Reprocess
-              </Button>
-            </template>
-          </ReprocessOptionsPopover>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-9 w-9"
-                @click="handleCopyTranscript"
-              >
-                <Check
-                  v-if="isTranscriptCopied"
-                  class="h-4 w-4 text-green-600"
+            <X class="h-4 w-4" />
+            <span class="sr-only">Close search</span>
+          </Button>
+        </template>
+
+        <template v-else>
+          <Button
+            variant="outline"
+            size="sm"
+            class="h-9 shrink-0 rounded-md px-3 text-sm"
+            @click="handleStartOver"
+          >
+            <ChevronLeft class="mr-0.5 h-4 w-4" />
+            Back
+          </Button>
+
+          <label v-if="!isNarrowScreen" class="relative min-w-[220px] flex-1">
+            <Search
+              class="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground"
+            />
+            <input
+              v-model="searchQuery"
+              type="search"
+              class="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm outline-none focus:border-primary"
+              placeholder="Search transcript"
+            />
+          </label>
+
+          <div
+            class="ml-auto flex shrink-0 items-center gap-1 sm:ml-0 sm:gap-2"
+          >
+            <Button
+              v-if="isNarrowScreen"
+              variant="ghost"
+              size="icon"
+              class="h-9 w-9"
+              @click="openTranscriptSearch"
+            >
+              <Search class="h-4 w-4" />
+              <span class="sr-only">Search transcript</span>
+            </Button>
+            <ReprocessOptionsPopover
+              v-if="showReprocessToolbarButton"
+              v-bind="reprocessOptions"
+              :open="isReprocessOptionsOpen"
+              @update:open="setReprocessOptionsOpen"
+              @update:language="
+                reprocessOptions.language =
+                  normalizeTranscriptionLanguage($event)
+              "
+              @update:enable-diarization="
+                reprocessOptions.enableDiarization = $event
+              "
+              @update:speaker-scale="reprocessOptions.speakerScale = $event"
+              @update:speaker-count="reprocessOptions.speakerCount = $event"
+              @reprocess="handleReprocess"
+            >
+              <template #trigger>
+                <!-- Phones open this from the "More" menu, so the popover
+                     only needs an anchor at the toolbar's right edge. -->
+                <span
+                  v-if="isNarrowScreen"
+                  aria-hidden="true"
+                  class="pointer-events-none absolute bottom-0 right-3 h-0 w-0"
                 />
-                <Copy v-else class="h-4 w-4" />
-                <span class="sr-only">Copy transcript</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Copy transcript</p>
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-9 w-9"
-                @click="transcriptionExport.exportTranscript('txt')"
+                <Button
+                  v-else
+                  variant="outline"
+                  size="sm"
+                  class="h-9 px-3 text-sm"
+                >
+                  <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
+                  Reprocess
+                </Button>
+              </template>
+            </ReprocessOptionsPopover>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="h-9 w-9"
+                  @click="handleCopyTranscript"
+                >
+                  <Check
+                    v-if="isTranscriptCopied"
+                    class="h-4 w-4 text-green-600"
+                  />
+                  <Copy v-else class="h-4 w-4" />
+                  <span class="sr-only">Copy transcript</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Copy transcript</p>
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip v-if="!isNarrowScreen">
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="h-9 w-9"
+                  @click="transcriptionExport.exportTranscript('txt')"
+                >
+                  <Download class="h-4 w-4" />
+                  <span class="sr-only">Export text</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Export as text</p>
+              </TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" class="h-9 w-9">
+                  <MoreHorizontal class="h-4 w-4" />
+                  <span class="sr-only">{{
+                    isNarrowScreen ? "More actions" : "More export options"
+                  }}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                @close-auto-focus="handleMoreMenuCloseAutoFocus"
               >
-                <Download class="h-4 w-4" />
-                <span class="sr-only">Export text</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Export as text</p>
-            </TooltipContent>
-          </Tooltip>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" class="h-9 w-9">
-                <MoreHorizontal class="h-4 w-4" />
-                <span class="sr-only">More export options</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                @click="transcriptionExport.exportTranscript('md')"
-              >
-                <Download class="mr-2 h-4 w-4" />
-                Export as Markdown
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                @click="transcriptionExport.exportTranscript('srt')"
-              >
-                <Download class="mr-2 h-4 w-4" />
-                Export as subtitle
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+                <template v-if="isNarrowScreen">
+                  <DropdownMenuItem
+                    v-if="showReprocessToolbarButton"
+                    @select="handleReprocessFromMoreMenu"
+                  >
+                    <RefreshCw class="mr-2 h-4 w-4" />
+                    Reprocess…
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    @click="transcriptionExport.exportTranscript('txt')"
+                  >
+                    <Download class="mr-2 h-4 w-4" />
+                    Export as text
+                  </DropdownMenuItem>
+                </template>
+                <DropdownMenuItem
+                  @click="transcriptionExport.exportTranscript('md')"
+                >
+                  <Download class="mr-2 h-4 w-4" />
+                  Export as Markdown
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  @click="transcriptionExport.exportTranscript('srt')"
+                >
+                  <Download class="mr-2 h-4 w-4" />
+                  Export as subtitle
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </template>
       </header>
 
       <!-- Reprocess banner for live recordings -->
@@ -2255,395 +2393,404 @@ onUnmounted(() => {
       v-else
       class="transcription-page relative mx-auto flex min-h-0 w-full flex-1 flex-col bg-muted"
     >
-      <div v-if="!store.isProcessing" class="absolute right-5 top-5 z-20">
-        <TranscriptionSettingsPanel
-          :execution-env="store.executionEnv"
-          :asr-engine="prefetchAsrEngine"
-          :diarization-engine="prefetchDiarizationEngine"
-          :effective-runtime="store.effectiveRuntime"
-          :is-processing="store.isProcessing"
-          :parakeet-cached="store.parakeetCached"
-          :diarization-cached="store.diarizationCached"
-          :parakeet-load-progress="store.parakeetLoadProgress"
-          :parakeet-indeterminate="store.parakeetLoadIndeterminate"
-          :diarization-load-progress="store.diarizationLoadProgress"
-          @update:execution-env="store.setExecutionEnv($event)"
-          @clear-cache="handleClearCache"
-        />
-      </div>
-
       <ScrollArea class="min-h-0 flex-1">
-        <BrowserAdvisoryBanner
-          v-if="shouldShowRuntimeAdvisory"
-          :variant="advisoryVariant"
-        />
+        <!-- Fill the scroll area so the footer rests at the bottom of short
+             pages and follows the content on long ones. -->
+        <div class="flex min-h-[calc(100svh-2.5rem)] flex-col">
+          <BrowserAdvisoryBanner
+            v-if="shouldShowRuntimeAdvisory"
+            :variant="advisoryVariant"
+          />
 
-        <div v-if="showDropZone" class="mx-auto w-full max-w-3xl px-6 py-10">
-          <!-- Browse all saved transcripts (reached via "View all") -->
-          <template v-if="isBrowsingHistory">
-            <button
-              type="button"
-              class="mb-5 inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-              @click="handleBackToNew"
-            >
-              <ChevronLeft class="h-4 w-4" />
-              New transcript
-            </button>
-            <TranscriptionHistoryList
-              :records="historySummaries"
-              :is-loading="isLoadingHistory"
-              @open="handleOpenRecord"
-              @delete="handleDeleteRecord"
-              @delete-all="handleDeleteAllRecords"
-            />
-          </template>
-
-          <template v-else>
-            <!-- Headline -->
-            <div v-if="!store.liveMode" :class="store.file ? 'mb-8' : 'mb-4'">
-              <h1 class="text-2xl font-semibold">What's said stays here.</h1>
-              <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-                <p class="text-sm text-muted-foreground">
-                  Private transcription for voice memos, meetings and videos.
-                </p>
-                <AdaptivePopover v-if="!store.file">
-                  <template #trigger>
-                    <button
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-full border border-border bg-card py-0.5 pl-2 pr-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Globe class="h-3 w-3 shrink-0" aria-hidden="true" />
-                      <span class="inline-flex items-center gap-1">
-                        English
-                        <span
-                          class="mx-px h-2.5 w-px bg-muted-foreground/30"
-                          aria-hidden="true"
-                        />
-                        Chinese
-                      </span>
-                    </button>
-                  </template>
-                  <p>
-                    Transcribes English, Chinese, or both mixed in the same
-                    sentence. Pick the language before transcribing.
-                  </p>
-                </AdaptivePopover>
-              </div>
-            </div>
-
-            <!-- File upload mode (default path) -->
-            <template v-if="!store.liveMode">
-              <TranscriptionDropZone
-                :file="store.file"
-                :is-processing="store.isProcessing"
-                @file-selected="handleFileSelected"
-                @clear="handleClearFile"
+          <div
+            v-if="showDropZone"
+            class="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10"
+          >
+            <!-- Browse all saved transcripts (reached via "View all") -->
+            <template v-if="isBrowsingHistory">
+              <button
+                type="button"
+                class="mb-5 inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                @click="handleBackToNew"
+              >
+                <ChevronLeft class="h-4 w-4" />
+                New transcript
+              </button>
+              <TranscriptionHistoryList
+                :records="historySummaries"
+                :is-loading="isLoadingHistory"
+                @open="handleOpenRecord"
+                @delete="handleDeleteRecord"
+                @delete-all="handleDeleteAllRecords"
               />
+            </template>
 
-              <!-- File selected: settings + start -->
-              <div v-if="store.file" class="mt-3">
-                <div
-                  v-if="store.fileDuration"
-                  class="text-xs text-muted-foreground"
-                >
-                  Duration: {{ formatDuration(store.fileDuration) }}
+            <template v-else>
+              <!-- Headline -->
+              <div v-if="!store.liveMode" :class="store.file ? 'mb-8' : 'mb-4'">
+                <div class="flex items-start justify-between gap-3">
+                  <h1 class="text-2xl font-semibold">
+                    What's said stays here.
+                  </h1>
+                  <div class="shrink-0">
+                    <OnDeviceInfoPanel
+                      v-model:open="isOnDeviceInfoOpen"
+                      v-bind="onDeviceInfoProps"
+                      outlined
+                      @update:execution-env="store.setExecutionEnv($event)"
+                      @clear-cache="handleClearCache"
+                    />
+                  </div>
                 </div>
-                <div
-                  v-if="preflightWarning"
-                  class="mt-8 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
-                >
-                  {{ preflightWarning }}
-                </div>
-                <TranscriptionLanguageOptions
-                  class="mt-8"
-                  :language="store.transcriptionLanguage"
-                  :disabled="store.isProcessing"
-                  @update:language="store.setTranscriptionLanguage($event)"
-                />
-                <SpeakerIdentificationOptions
-                  class="mt-3"
-                  :enabled="store.enableDiarization"
-                  :scale="store.speakerScale"
-                  :count="store.speakerCount"
-                  :disabled="store.isProcessing"
-                  @update:enabled="store.setEnableDiarization($event)"
-                  @update:scale="store.setSpeakerScale($event)"
-                  @update:count="store.setSpeakerCount($event)"
-                />
-                <Button
-                  class="mt-12 h-10 w-full"
-                  :disabled="blocksTranscription || isAwaitingPrefetch"
-                  @click="handleStartTranscription"
-                >
-                  <Loader2
-                    v-if="isAwaitingPrefetch"
-                    class="mr-2 h-4 w-4 animate-spin"
-                  />
-                  {{ isAwaitingPrefetch ? "Preparing…" : "Transcribe" }}
-                </Button>
-              </div>
-
-              <!-- No file: secondary live action, privacy note, recents -->
-              <template v-else>
-                <div class="mt-4 flex items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/80 transition-colors hover:border-foreground/40 hover:text-foreground"
-                    @click="store.setLiveMode(true)"
-                  >
-                    <Mic class="h-4 w-4" />
-                    Record live audio instead
-                  </button>
-                  <AdaptivePopover align="end">
+                <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <p class="text-sm text-muted-foreground">
+                    Private transcription for voice memos, meetings and videos.
+                  </p>
+                  <AdaptivePopover v-if="!store.file">
                     <template #trigger>
                       <button
                         type="button"
-                        class="flex items-center gap-1.5 rounded-sm text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        class="inline-flex items-center gap-1.5 rounded-full border border-border bg-card py-0.5 pl-2 pr-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <ShieldCheck class="h-3.5 w-3.5 shrink-0" />
-                        Nothing leaves this device
+                        <Globe class="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span class="inline-flex items-center gap-1">
+                          English
+                          <span
+                            class="mx-px h-2.5 w-px bg-muted-foreground/30"
+                            aria-hidden="true"
+                          />
+                          Chinese
+                        </span>
                       </button>
                     </template>
                     <p>
-                      Your audio is transcribed right here on your device, not
-                      on a server. Recordings and transcripts are saved only
-                      here, too.
+                      Transcribes English, Chinese, or both mixed in the same
+                      sentence. Pick the language before transcribing.
                     </p>
                   </AdaptivePopover>
                 </div>
+              </div>
 
-                <!-- Recent transcripts -->
-                <section
-                  v-if="isLoadingHistory || hasHistory"
-                  class="mt-8 border-t border-border pt-8"
-                >
-                  <div class="mb-3 flex items-center justify-between gap-3">
-                    <h2 class="text-sm font-semibold text-foreground">
-                      Recent transcripts
-                    </h2>
-                    <div class="flex items-center gap-3">
-                      <button
-                        v-if="hasMoreHistory"
-                        type="button"
-                        class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                        @click="handleOpenBrowse"
-                      >
-                        View all ({{ historySummaries.length }})
-                      </button>
-                      <ConfirmDestructiveButton
-                        v-if="hasHistory"
-                        variant="ghost"
-                        size="sm"
-                        class="flex h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-destructive"
-                        armed-class="flex h-7 gap-1.5 px-2 text-xs bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive"
-                        confirm-tooltip-text="Click again to delete all transcripts"
-                        @confirm="handleDeleteAllRecords"
-                      >
-                        <template #default="{ isArmed }">
-                          <component
-                            :is="isArmed ? Check : Trash2"
-                            class="h-3.5 w-3.5"
-                          />
-                          <span>Delete all</span>
-                        </template>
-                      </ConfirmDestructiveButton>
-                    </div>
+              <!-- File upload mode (default path) -->
+              <template v-if="!store.liveMode">
+                <TranscriptionDropZone
+                  :file="store.file"
+                  :is-processing="store.isProcessing"
+                  @file-selected="handleFileSelected"
+                  @clear="handleClearFile"
+                />
+
+                <!-- File selected: settings + start -->
+                <div v-if="store.file" class="mt-3">
+                  <div
+                    v-if="store.fileDuration"
+                    class="text-xs text-muted-foreground"
+                  >
+                    Duration: {{ formatDuration(store.fileDuration) }}
                   </div>
                   <div
-                    v-if="isLoadingHistory"
-                    class="flex items-center justify-center rounded-xl border border-border bg-card py-10 text-muted-foreground"
+                    v-if="preflightWarning"
+                    class="mt-8 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
                   >
-                    <Loader2 class="h-5 w-5 animate-spin" />
+                    {{ preflightWarning }}
                   </div>
-                  <ul
-                    v-else
-                    class="overflow-hidden rounded-xl border border-border bg-card"
+                  <TranscriptionLanguageOptions
+                    class="mt-8"
+                    :language="store.transcriptionLanguage"
+                    :disabled="store.isProcessing"
+                    @update:language="store.setTranscriptionLanguage($event)"
+                  />
+                  <SpeakerIdentificationOptions
+                    class="mt-3"
+                    :enabled="store.enableDiarization"
+                    :scale="store.speakerScale"
+                    :count="store.speakerCount"
+                    :disabled="store.isProcessing"
+                    @update:enabled="store.setEnableDiarization($event)"
+                    @update:scale="store.setSpeakerScale($event)"
+                    @update:count="store.setSpeakerCount($event)"
+                  />
+                  <Button
+                    class="mt-12 h-10 w-full"
+                    :disabled="blocksTranscription || isAwaitingPrefetch"
+                    @click="handleStartTranscription"
                   >
-                    <li
-                      v-for="record in recentSummaries"
-                      :key="record.id"
-                      class="group/record relative border-b border-border/70 last:border-b-0"
+                    <Loader2
+                      v-if="isAwaitingPrefetch"
+                      class="mr-2 h-4 w-4 animate-spin"
+                    />
+                    {{ isAwaitingPrefetch ? "Preparing…" : "Transcribe" }}
+                  </Button>
+                </div>
+
+                <!-- No file: secondary live action, privacy note, recents -->
+                <template v-else>
+                  <div
+                    class="mt-4 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <button
+                      type="button"
+                      class="inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-card px-3.5 py-2.5 text-sm font-medium text-foreground shadow-sm transition-colors hover:border-foreground/30 hover:bg-background sm:py-2"
+                      @click="store.setLiveMode(true)"
                     >
-                      <button
-                        type="button"
-                        class="flex w-full items-center gap-3 px-4 py-3 pr-20 text-left transition-colors hover:bg-foreground/[0.04]"
-                        @click="handleOpenRecord(record.id)"
+                      <Mic class="h-4 w-4" />
+                      <span
+                        >Record live audio<span class="hidden sm:inline">
+                          instead</span
+                        ></span
                       >
-                        <span
-                          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 text-muted-foreground"
+                    </button>
+                    <!-- The full privacy story lives in the settings panel. -->
+                    <button
+                      type="button"
+                      class="flex items-center justify-center gap-1.5 self-center rounded-sm py-1 text-xs text-muted-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      @click="isOnDeviceInfoOpen = true"
+                    >
+                      <ShieldCheck class="h-3.5 w-3.5 shrink-0" />
+                      Nothing leaves this device
+                    </button>
+                  </div>
+
+                  <!-- Recent transcripts -->
+                  <section
+                    v-if="isLoadingHistory || hasHistory"
+                    class="mt-8 border-t border-border pt-8"
+                  >
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                      <h2 class="text-sm font-semibold text-foreground">
+                        Recent transcripts
+                      </h2>
+                      <div class="flex items-center gap-3">
+                        <button
+                          v-if="hasMoreHistory"
+                          type="button"
+                          class="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                          @click="handleOpenBrowse"
                         >
-                          <Mic v-if="record.isLiveRecording" class="h-4 w-4" />
-                          <FileAudio v-else class="h-4 w-4" />
-                        </span>
-                        <span class="min-w-0 flex-1">
-                          <span class="flex items-center gap-2">
-                            <span
-                              class="min-w-0 truncate text-sm font-medium text-foreground"
-                            >
-                              {{ record.fileName || "Untitled transcript" }}
-                            </span>
-                            <span
-                              v-if="record.isLiveRecording"
-                              class="shrink-0 rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-                            >
-                              Live
-                            </span>
-                          </span>
-                          <span
-                            class="mt-0.5 flex flex-wrap items-center gap-x-2.5 text-[11px] text-muted-foreground"
-                          >
-                            <span class="font-mono">{{
-                              formatDate(record.createdAt)
-                            }}</span>
-                            <span
-                              v-if="formatDuration(record.fileDuration)"
-                              class="flex items-center gap-1"
-                            >
-                              <span aria-hidden="true">·</span>
-                              <span class="font-mono">{{
-                                formatDuration(record.fileDuration)
-                              }}</span>
-                            </span>
-                          </span>
-                        </span>
-                      </button>
-                      <!-- Trailing controls: open chevron stays put; delete fades in beside it -->
-                      <div
-                        class="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1"
-                      >
-                        <div
-                          class="pointer-events-auto opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/record:opacity-100"
+                          View all ({{ historySummaries.length }})
+                        </button>
+                        <ConfirmDestructiveButton
+                          v-if="hasHistory"
+                          variant="ghost"
+                          size="sm"
+                          class="flex h-7 gap-1.5 px-2 text-xs text-muted-foreground hover:text-destructive"
+                          armed-class="flex h-7 gap-1.5 px-2 text-xs bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive"
+                          confirm-tooltip-text="Click again to delete all transcripts"
+                          @confirm="handleDeleteAllRecords"
                         >
-                          <ConfirmDestructiveButton
-                            variant="ghost"
-                            size="icon"
-                            class="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                            armed-class="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive"
-                            confirm-tooltip-text="Click again to delete this transcript"
-                            @confirm="handleDeleteRecord(record.id)"
-                          >
-                            <template #default="{ isArmed }">
-                              <component
-                                :is="isArmed ? Check : Trash2"
-                                class="h-4 w-4"
-                              />
-                              <span class="sr-only">Delete transcript</span>
-                            </template>
-                          </ConfirmDestructiveButton>
-                        </div>
-                        <ChevronRight
-                          class="h-4 w-4 text-muted-foreground/50"
-                        />
+                          <template #default="{ isArmed }">
+                            <component
+                              :is="isArmed ? Check : Trash2"
+                              class="h-3.5 w-3.5"
+                            />
+                            <span>Delete all</span>
+                          </template>
+                        </ConfirmDestructiveButton>
                       </div>
-                    </li>
-                  </ul>
-                </section>
+                    </div>
+                    <div
+                      v-if="isLoadingHistory"
+                      class="flex items-center justify-center rounded-xl border border-border bg-card py-10 text-muted-foreground"
+                    >
+                      <Loader2 class="h-5 w-5 animate-spin" />
+                    </div>
+                    <ul
+                      v-else
+                      class="overflow-hidden rounded-xl border border-border bg-card"
+                    >
+                      <li
+                        v-for="record in recentSummaries"
+                        :key="record.id"
+                        class="group/record relative border-b border-border/70 last:border-b-0"
+                      >
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-3 px-4 py-3 pr-20 text-left transition-colors hover:bg-foreground/[0.04]"
+                          @click="handleOpenRecord(record.id)"
+                        >
+                          <span
+                            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50 text-muted-foreground"
+                          >
+                            <Mic
+                              v-if="record.isLiveRecording"
+                              class="h-4 w-4"
+                            />
+                            <FileAudio v-else class="h-4 w-4" />
+                          </span>
+                          <span class="min-w-0 flex-1">
+                            <span class="flex items-center gap-2">
+                              <span
+                                class="min-w-0 truncate text-sm font-medium text-foreground"
+                              >
+                                {{ record.fileName || "Untitled transcript" }}
+                              </span>
+                              <span
+                                v-if="record.isLiveRecording"
+                                class="shrink-0 rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                              >
+                                Live
+                              </span>
+                            </span>
+                            <span
+                              class="mt-0.5 flex flex-wrap items-center gap-x-2.5 text-[11px] text-muted-foreground"
+                            >
+                              <span class="font-mono">{{
+                                formatDate(record.createdAt)
+                              }}</span>
+                              <span
+                                v-if="formatDuration(record.fileDuration)"
+                                class="flex items-center gap-1"
+                              >
+                                <span aria-hidden="true">·</span>
+                                <span class="font-mono">{{
+                                  formatDuration(record.fileDuration)
+                                }}</span>
+                              </span>
+                            </span>
+                          </span>
+                        </button>
+                        <!-- Trailing controls: open chevron stays put; delete fades in beside it -->
+                        <div
+                          class="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1"
+                        >
+                          <div
+                            class="pointer-events-auto opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover/record:opacity-100"
+                          >
+                            <ConfirmDestructiveButton
+                              variant="ghost"
+                              size="icon"
+                              class="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              armed-class="h-8 w-8 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive"
+                              confirm-tooltip-text="Click again to delete this transcript"
+                              @confirm="handleDeleteRecord(record.id)"
+                            >
+                              <template #default="{ isArmed }">
+                                <component
+                                  :is="isArmed ? Check : Trash2"
+                                  class="h-4 w-4"
+                                />
+                                <span class="sr-only">Delete transcript</span>
+                              </template>
+                            </ConfirmDestructiveButton>
+                          </div>
+                          <ChevronRight
+                            class="h-4 w-4 text-muted-foreground/50"
+                          />
+                        </div>
+                      </li>
+                    </ul>
+                  </section>
+                </template>
+              </template>
+
+              <!-- Live microphone mode (idle, pre-start) -->
+              <template v-else>
+                <button
+                  type="button"
+                  class="mb-5 mt-6 inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  @click="store.setLiveMode(false)"
+                >
+                  <ChevronLeft class="h-4 w-4" />
+                  Back
+                </button>
+                <TranscriptionLanguageOptions
+                  class="mx-auto mb-3 max-w-md"
+                  :language="store.transcriptionLanguage"
+                  :disabled="isAwaitingPrefetch"
+                  @update:language="store.setTranscriptionLanguage($event)"
+                />
+                <LiveMicrophonePanel
+                  :is-model-loading="isAwaitingPrefetch"
+                  :model-load-progress="store.parakeetLoadProgress"
+                  :selected-mic-id="store.selectedMicId"
+                  :selected-mic-label="store.selectedMicLabel"
+                  :available-mics="store.availableMics"
+                  @select-microphone="handleSelectMicrophone"
+                  @start="handleStartLive"
+                  @cancel="handleCancelLivePrefetch"
+                />
               </template>
             </template>
+          </div>
 
-            <!-- Live microphone mode (idle, pre-start) -->
-            <template v-else>
-              <button
-                type="button"
-                class="mb-5 mt-6 inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-                @click="store.setLiveMode(false)"
-              >
-                <ChevronLeft class="h-4 w-4" />
-                Back
-              </button>
-              <TranscriptionLanguageOptions
-                class="mx-auto mb-3 max-w-md"
-                :language="store.transcriptionLanguage"
-                :disabled="isAwaitingPrefetch"
-                @update:language="store.setTranscriptionLanguage($event)"
-              />
-              <LiveMicrophonePanel
-                :is-model-loading="isAwaitingPrefetch"
-                :model-load-progress="store.parakeetLoadProgress"
-                :selected-mic-id="store.selectedMicId"
-                :selected-mic-label="store.selectedMicLabel"
-                :available-mics="store.availableMics"
-                @select-microphone="handleSelectMicrophone"
-                @start="handleStartLive"
-                @cancel="handleCancelLivePrefetch"
-              />
-            </template>
-          </template>
-        </div>
+          <!-- Live microphone: model loading state -->
+          <div
+            v-if="showLiveSession"
+            class="mx-auto w-full max-w-5xl px-6 py-8"
+          >
+            <LiveMicrophonePanel
+              :is-model-loading="true"
+              :model-load-progress="store.parakeetLoadProgress"
+              :selected-mic-id="store.selectedMicId"
+              :selected-mic-label="store.selectedMicLabel"
+              :available-mics="store.availableMics"
+              @cancel="handleCancel"
+            />
+          </div>
 
-        <!-- Live microphone: model loading state -->
-        <div v-if="showLiveSession" class="mx-auto w-full max-w-5xl px-6 py-8">
-          <LiveMicrophonePanel
-            :is-model-loading="true"
-            :model-load-progress="store.parakeetLoadProgress"
-            :selected-mic-id="store.selectedMicId"
-            :selected-mic-label="store.selectedMicLabel"
-            :available-mics="store.availableMics"
+          <TranscriptionProgressPanel
+            v-if="isAwaitingPrefetch"
+            phase="downloading-model"
+            :enable-diarization="true"
+            :transcription-progress="prefetchModelProgress"
+            :diarization-load-progress="store.diarizationLoadProgress"
+            :cancelable="true"
+            @cancel="handleCancelPrefetchWait"
+          />
+
+          <TranscriptionProgressPanel
+            v-if="
+              store.isProcessing &&
+              !store.isListening &&
+              (!store.liveMode || isReprocessing)
+            "
+            :phase="store.processPhase"
+            :enable-diarization="
+              isReprocessing
+                ? reprocessOptions.enableDiarization
+                : store.enableDiarization
+            "
+            :transcription-progress="store.transcriptionProgress"
+            :diarization-progress="store.diarizationProgress"
+            :diarization-load-progress="store.diarizationLoadProgress"
             @cancel="handleCancel"
           />
-        </div>
 
-        <TranscriptionProgressPanel
-          v-if="isAwaitingPrefetch"
-          phase="downloading-model"
-          :enable-diarization="true"
-          :transcription-progress="prefetchModelProgress"
-          :diarization-load-progress="store.diarizationLoadProgress"
-          :cancelable="true"
-          @cancel="handleCancelPrefetchWait"
-        />
-
-        <TranscriptionProgressPanel
-          v-if="
-            store.isProcessing &&
-            !store.isListening &&
-            (!store.liveMode || isReprocessing)
-          "
-          :phase="store.processPhase"
-          :enable-diarization="
-            isReprocessing
-              ? reprocessOptions.enableDiarization
-              : store.enableDiarization
-          "
-          :transcription-progress="store.transcriptionProgress"
-          :diarization-progress="store.diarizationProgress"
-          :diarization-load-progress="store.diarizationLoadProgress"
-          @cancel="handleCancel"
-        />
-
-        <div
-          v-if="showEmptyCompletion"
-          class="mx-auto mt-8 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
-        >
-          <p class="font-medium">No transcript was produced</p>
-          <p class="mt-1 text-xs">
-            The model completed but did not return readable transcript segments.
-            Try switching runtime in settings or testing with a shorter
-            clear-speech clip.
-          </p>
-        </div>
-
-        <div
-          v-if="store.processPhase === 'error' && store.error"
-          class="mx-auto mt-8 max-w-xl rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
-        >
-          <p class="font-medium">Transcription failed</p>
-          <p class="mt-1 text-xs">{{ store.error.message }}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            class="mt-3"
-            @click="
-              store.clearProcessingState();
-              if (store.liveMode) {
-                store.clearLiveState();
-              } else {
-                store.clearFile();
-              }
-            "
+          <div
+            v-if="showEmptyCompletion"
+            class="mx-auto mt-8 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
           >
-            Try Again
-          </Button>
+            <p class="font-medium">No transcript was produced</p>
+            <p class="mt-1 text-xs">
+              The model completed but did not return readable transcript
+              segments. Try another "Processing" option in settings (the gear
+              icon), or test with a shorter clear-speech clip.
+            </p>
+          </div>
+
+          <div
+            v-if="store.processPhase === 'error' && store.error"
+            class="mx-auto mt-8 max-w-xl rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+          >
+            <p class="font-medium">Transcription failed</p>
+            <p class="mt-1 text-xs">{{ store.error.message }}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              class="mt-3"
+              @click="
+                store.clearProcessingState();
+                if (store.liveMode) {
+                  store.clearLiveState();
+                } else {
+                  store.clearFile();
+                }
+              "
+            >
+              Try Again
+            </Button>
+          </div>
+          <AppFooter class="mt-auto" />
         </div>
       </ScrollArea>
     </div>
