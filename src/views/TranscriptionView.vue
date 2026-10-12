@@ -35,6 +35,7 @@ import {
   RotateCcw,
   Plus,
   ShieldCheck,
+  X,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { AdaptivePopover } from "@/components/ui/adaptive-popover";
@@ -527,6 +528,7 @@ function handleFileSelected(file) {
   store.setFile(file);
   isLiveRecordingResult.value = false;
   hasReprocessedLiveRecording.value = false;
+  isReprocessBannerDismissed.value = false;
   // Estimate duration via Web Audio API
   const url = URL.createObjectURL(file);
   store.audioUrl = url;
@@ -580,6 +582,7 @@ function resetWorkingTranscriptState() {
   isAudioPlaying.value = false;
   isReprocessing.value = false;
   isReprocessOptionsOpen.value = false;
+  isReprocessBannerDismissed.value = false;
 }
 
 async function handleStartTranscription() {
@@ -717,6 +720,7 @@ async function hydrateFromRecord(record) {
     );
     activeSpeakerOptions.value = normalizeSpeakerOptions(record.speakerOptions);
     isReprocessOptionsOpen.value = false;
+    isReprocessBannerDismissed.value = false;
     activeAudioManifest.value = record.audioManifest ?? null;
     activeAudioPartIndex.value = 0;
     let playbackBlob = null;
@@ -907,6 +911,7 @@ async function handleStartLive() {
   store.setLiveMode(true);
   isLiveRecordingResult.value = true;
   hasReprocessedLiveRecording.value = false;
+  isReprocessBannerDismissed.value = false;
   if (prefetchPromise.value) {
     isAwaitingPrefetch.value = true;
     try {
@@ -1011,6 +1016,8 @@ const canDownloadLiveRecording = computed(
 );
 const isReprocessing = ref(false);
 const isReprocessOptionsOpen = ref(false);
+/** Hides the reprocess banner for the open recording only; not saved. */
+const isReprocessBannerDismissed = ref(false);
 /**
  * Options for the next reprocess. They start from the recording's own
  * language and speaker options, never the start screen's, and stay local
@@ -1036,10 +1043,20 @@ function openReprocessOptions() {
   isReprocessOptionsOpen.value = true;
 }
 
-// Phones offer reprocessing from the toolbar; wider screens use the banner.
+// Phones offer reprocessing from the toolbar; wider screens use the banner
+// until it is dismissed, then fall back to the toolbar too.
 const isNarrowScreen = useMediaQuery("(max-width: 639px)");
 const showReprocessOffer = computed(
   () => canReprocess.value && !isReprocessing.value,
+);
+const showReprocessBanner = computed(
+  () =>
+    showReprocessOffer.value &&
+    !isNarrowScreen.value &&
+    !isReprocessBannerDismissed.value,
+);
+const showReprocessToolbarButton = computed(
+  () => showReprocessOffer.value && !showReprocessBanner.value,
 );
 
 /** @param {boolean} open */
@@ -1534,7 +1551,7 @@ onUnmounted(() => {
 
         <div class="flex shrink-0 items-center gap-2">
           <ReprocessOptionsPopover
-            v-if="showReprocessOffer && isNarrowScreen"
+            v-if="showReprocessToolbarButton"
             v-bind="reprocessOptions"
             :open="isReprocessOptionsOpen"
             @update:open="setReprocessOptionsOpen"
@@ -1618,7 +1635,7 @@ onUnmounted(() => {
 
       <!-- Reprocess banner for live recordings -->
       <div
-        v-if="showReprocessOffer && !isNarrowScreen"
+        v-if="showReprocessBanner"
         class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card px-5 py-2.5"
       >
         <div
@@ -1651,6 +1668,15 @@ onUnmounted(() => {
             </Button>
           </template>
         </ReprocessOptionsPopover>
+        <Button
+          variant="ghost"
+          size="icon"
+          class="-mr-2 h-8 w-8 text-muted-foreground"
+          @click="isReprocessBannerDismissed = true"
+        >
+          <X class="h-4 w-4" />
+          <span class="sr-only">Dismiss</span>
+        </Button>
       </div>
 
       <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
