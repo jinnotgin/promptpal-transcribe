@@ -1,6 +1,6 @@
 <script setup>
-import { computed } from "vue";
-import { Loader2, X, CheckCircle2, Circle } from "lucide-vue-next";
+import { computed, ref } from "vue";
+import { Loader2, X, CheckCircle2, Circle, ChevronDown } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import {
   createProgressStages,
@@ -17,6 +17,9 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["cancel"]);
+
+/** The optional `details` slot stays collapsed until asked for. */
+const isDetailsOpen = ref(false);
 
 const stages = computed(() => {
   return createProgressStages(props.enableDiarization);
@@ -172,6 +175,33 @@ function stageState(index) {
       This transcription is running locally on your computer. Larger files can
       take a while, and your computer may use more resources and power until
       it's done.
+      <!-- Kept quiet: most people never need the details. A dotted
+           border, unlike an underline, also runs under the arrow. -->
+      <button
+        v-if="$slots.details"
+        type="button"
+        class="inline-flex items-center gap-0.5 border-b border-dotted border-muted-foreground/50 leading-4 transition-colors hover:border-foreground/50 hover:text-foreground"
+        :aria-expanded="isDetailsOpen"
+        aria-controls="transcription-progress-details"
+        @click="isDetailsOpen = !isDetailsOpen"
+      >
+        {{ isDetailsOpen ? "Less info" : "More info"
+        }}<ChevronDown
+          class="h-3 w-3 transition-transform"
+          :class="{ 'rotate-180': isDetailsOpen }"
+          aria-hidden="true"
+        />
+      </button>
     </p>
+
+    <template v-if="$slots.details">
+      <div
+        v-if="isDetailsOpen"
+        id="transcription-progress-details"
+        class="mt-3"
+      >
+        <slot name="details" />
+      </div>
+    </template>
   </div>
 </template>

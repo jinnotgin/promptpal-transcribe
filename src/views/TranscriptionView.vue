@@ -66,6 +66,7 @@ import { useLiveRecordingMp3Export } from "@/features/transcription/composables/
 import { generateRecordId } from "@/features/transcription/lib/transcriptHistoryRecords.js";
 import { isLiveTranscript } from "@/features/transcription/lib/transcriptSource.js";
 import { isChromeBrowser } from "@/features/transcription/lib/hardwareCapabilities.js";
+import { describeRuntime } from "@/features/transcription/lib/onDeviceInfo.js";
 import { APP_NAME } from "@/lib/config.js";
 import { copyContent, formatDate } from "@/lib/utils.js";
 import { trackAnalyticsEvent } from "@/lib/eventSignals.js";
@@ -79,6 +80,8 @@ import { createTranscriptAudioSeekCoordinator } from "@/features/transcription/l
 import TranscriptionDropZone from "@/features/transcription/components/TranscriptionDropZone.vue";
 import TranscriptionHistoryList from "@/features/transcription/components/TranscriptionHistoryList.vue";
 import OnDeviceInfoPanel from "@/features/transcription/components/OnDeviceInfoPanel.vue";
+import ExecutionEnvSelect from "@/features/transcription/components/ExecutionEnvSelect.vue";
+import ActiveRunDetails from "@/features/transcription/components/ActiveRunDetails.vue";
 import SpeakerIdentificationOptions from "@/features/transcription/components/SpeakerIdentificationOptions.vue";
 import TranscriptionLanguageOptions from "@/features/transcription/components/TranscriptionLanguageOptions.vue";
 import ReprocessOptionsPopover from "@/features/transcription/components/ReprocessOptionsPopover.vue";
@@ -271,10 +274,6 @@ const showDropZone = computed(
       store.processPhase !== "error" &&
       !store.isListening),
 );
-/** The start screen's headline, which hosts the settings button. */
-const showsStartHeadline = computed(
-  () => showDropZone.value && !isBrowsingHistory.value && !store.liveMode,
-);
 const prefetchModelProgress = computed(() => {
   const parakeetProgress = Math.min(
     100,
@@ -313,6 +312,28 @@ function currentSpeakerOptions() {
 const prefetchDiarizationEngine = computed(() =>
   store.speakerScale === "large" ? "sherpa" : "nemotron",
 );
+/** What the run in progress uses, for the progress card's "More info". */
+const activeRunDetails = computed(() => {
+  const reprocessing = isReprocessing.value;
+  const language = reprocessing
+    ? reprocessOptions.language
+    : store.transcriptionLanguage;
+  const speakerScale = reprocessing
+    ? reprocessOptions.speakerScale
+    : store.speakerScale;
+  return {
+    asrEngine: /** @type {'parakeet' | 'sensevoice'} */ (
+      language === "en" ? "parakeet" : "sensevoice"
+    ),
+    diarizationEngine: /** @type {'nemotron' | 'sherpa'} */ (
+      speakerScale === "large" ? "sherpa" : "nemotron"
+    ),
+    showDiarizer: reprocessing
+      ? reprocessOptions.enableDiarization
+      : store.enableDiarization,
+    runtimeLabel: describeRuntime(store.executionEnv, store.effectiveRuntime),
+  };
+});
 const hasHistory = computed(() => historySummaries.value.length > 0);
 const RECENT_TRANSCRIPT_LIMIT = 5;
 const recentSummaries = computed(() =>
@@ -637,7 +658,7 @@ async function handleStartTranscription() {
     store.error = {
       code: "ASR_EMPTY_RESULT",
       message:
-        "The transcription model finished but did not produce readable text. Try switching runtime in settings or using a clearer audio sample.",
+        "The transcription model finished but did not produce readable text. Try another processing option below, or a clearer audio sample.",
       recoverable: true,
     };
   }
@@ -1579,17 +1600,6 @@ onUnmounted(() => {
 
 <template>
   <TooltipProvider :delay-duration="120">
-    <!-- The start screen shows settings beside its headline; other screens
-         put them in the app header. -->
-    <Teleport to="#app-header-actions" defer>
-      <OnDeviceInfoPanel
-        v-if="!showsStartHeadline"
-        v-model:open="isOnDeviceInfoOpen"
-        v-bind="onDeviceInfoProps"
-        @update:execution-env="store.setExecutionEnv($event)"
-        @clear-cache="handleClearCache"
-      />
-    </Teleport>
     <div
       v-if="showTranscriptResult"
       class="flex min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden bg-muted text-foreground"
@@ -2432,7 +2442,9 @@ onUnmounted(() => {
                   <h1 class="text-2xl font-semibold">
                     What's said stays here.
                   </h1>
-                  <div class="shrink-0">
+                  <!-- The gear is taller than the headline; keep it from
+                       pushing the subtitle down. -->
+                  <div class="-mb-1 shrink-0">
                     <OnDeviceInfoPanel
                       v-model:open="isOnDeviceInfoOpen"
                       v-bind="onDeviceInfoProps"
@@ -2442,7 +2454,7 @@ onUnmounted(() => {
                     />
                   </div>
                 </div>
-                <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p class="text-sm text-muted-foreground">
                     Private transcription for voice memos, meetings and videos.
                   </p>
@@ -2685,14 +2697,23 @@ onUnmounted(() => {
 
               <!-- Live microphone mode (idle, pre-start) -->
               <template v-else>
-                <button
-                  type="button"
-                  class="mb-5 mt-6 inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-                  @click="store.setLiveMode(false)"
-                >
-                  <ChevronLeft class="h-4 w-4" />
-                  Back
-                </button>
+                <div class="mb-5 mt-6 flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                    @click="store.setLiveMode(false)"
+                  >
+                    <ChevronLeft class="h-4 w-4" />
+                    Back
+                  </button>
+                  <OnDeviceInfoPanel
+                    v-model:open="isOnDeviceInfoOpen"
+                    v-bind="onDeviceInfoProps"
+                    outlined
+                    @update:execution-env="store.setExecutionEnv($event)"
+                    @clear-cache="handleClearCache"
+                  />
+                </div>
                 <TranscriptionLanguageOptions
                   class="mx-auto mb-3 max-w-md"
                   :language="store.transcriptionLanguage"
@@ -2736,7 +2757,19 @@ onUnmounted(() => {
             :diarization-load-progress="store.diarizationLoadProgress"
             :cancelable="true"
             @cancel="handleCancelPrefetchWait"
-          />
+          >
+            <template #details>
+              <ActiveRunDetails
+                :model-status="{
+                  ...onDeviceInfoProps,
+                  asrEngine: activeRunDetails.asrEngine,
+                  diarizationEngine: activeRunDetails.diarizationEngine,
+                  showDiarizer: activeRunDetails.showDiarizer,
+                }"
+                :runtime-label="activeRunDetails.runtimeLabel"
+              />
+            </template>
+          </TranscriptionProgressPanel>
 
           <TranscriptionProgressPanel
             v-if="
@@ -2754,26 +2787,58 @@ onUnmounted(() => {
             :diarization-progress="store.diarizationProgress"
             :diarization-load-progress="store.diarizationLoadProgress"
             @cancel="handleCancel"
-          />
+          >
+            <template #details>
+              <ActiveRunDetails
+                :model-status="{
+                  ...onDeviceInfoProps,
+                  asrEngine: activeRunDetails.asrEngine,
+                  diarizationEngine: activeRunDetails.diarizationEngine,
+                  showDiarizer: activeRunDetails.showDiarizer,
+                }"
+                :runtime-label="activeRunDetails.runtimeLabel"
+              />
+            </template>
+          </TranscriptionProgressPanel>
 
           <div
             v-if="showEmptyCompletion"
-            class="mx-auto mt-8 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+            class="mx-auto mt-8 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm"
           >
-            <p class="font-medium">No transcript was produced</p>
-            <p class="mt-1 text-xs">
+            <p class="font-medium text-amber-900">No transcript was produced</p>
+            <p class="mt-1 text-xs text-amber-900">
               The model completed but did not return readable transcript
-              segments. Try another "Processing" option in settings (the gear
-              icon), or test with a shorter clear-speech clip.
+              segments. Try another processing option, or test with a shorter
+              clear-speech clip.
             </p>
+            <div class="mt-3 max-w-xs">
+              <p class="mb-1.5 text-xs font-medium text-foreground">
+                Processing
+              </p>
+              <ExecutionEnvSelect
+                :model-value="store.executionEnv"
+                :effective-runtime="store.effectiveRuntime"
+                @update:model-value="store.setExecutionEnv($event)"
+              />
+            </div>
           </div>
 
           <div
             v-if="store.processPhase === 'error' && store.error"
-            class="mx-auto mt-8 max-w-xl rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+            class="mx-auto mt-8 max-w-xl rounded-lg border border-red-200 bg-red-50 p-4 text-sm"
           >
-            <p class="font-medium">Transcription failed</p>
-            <p class="mt-1 text-xs">{{ store.error.message }}</p>
+            <p class="font-medium text-red-800">Transcription failed</p>
+            <p class="mt-1 text-xs text-red-800">{{ store.error.message }}</p>
+            <div class="mt-3 max-w-xs">
+              <p class="mb-1.5 text-xs font-medium text-foreground">
+                Processing
+              </p>
+              <ExecutionEnvSelect
+                :model-value="store.executionEnv"
+                :effective-runtime="store.effectiveRuntime"
+                @update:model-value="store.setExecutionEnv($event)"
+              />
+            </div>
             <Button
               variant="outline"
               size="sm"

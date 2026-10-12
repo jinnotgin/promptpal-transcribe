@@ -16,6 +16,10 @@ const props = defineProps({
     type: /** @type {import('vue').PropType<'nemotron' | 'sherpa'>} */ (String),
     default: "nemotron",
   },
+  /** List the diarizer; off for a run without speaker detection. */
+  showDiarizer: { type: Boolean, default: true },
+  /** Footnote-sized text, for use beside small print. */
+  compact: { type: Boolean, default: false },
   parakeetCached: { type: Boolean, default: false },
   diarizationCached: { type: Boolean, default: false },
   parakeetLoadProgress: { type: Number, default: 0 },
@@ -67,11 +71,15 @@ const diarizerModel = computed(
 
 const models = computed(() => [
   { role: "Speech to text", ...asrModel.value, status: asrStatus.value },
-  {
-    role: "Speaker detection",
-    ...diarizerModel.value,
-    status: diarizerStatus.value,
-  },
+  ...(props.showDiarizer
+    ? [
+        {
+          role: "Speaker detection",
+          ...diarizerModel.value,
+          status: diarizerStatus.value,
+        },
+      ]
+    : []),
 ]);
 
 /** @param {string} state */
@@ -90,12 +98,15 @@ function statusColor(state) {
 </script>
 
 <template>
-  <ul class="space-y-3">
+  <ul :class="compact ? 'space-y-2' : 'space-y-3'">
     <li v-for="model in models" :key="model.role" class="flex gap-2.5">
       <component
         :is="statusIcon(model.status.state)"
-        class="mt-0.5 h-4 w-4 shrink-0"
-        :class="statusColor(model.status.state)"
+        class="shrink-0"
+        :class="[
+          compact ? 'mt-0.5 h-3.5 w-3.5' : 'mt-0.5 h-4 w-4',
+          statusColor(model.status.state),
+        ]"
         aria-hidden="true"
       />
       <div class="min-w-0 flex-1">
@@ -103,7 +114,8 @@ function statusColor(state) {
           :href="model.href"
           target="_blank"
           rel="noopener noreferrer"
-          class="block text-sm font-medium leading-5 text-foreground underline-offset-2 hover:underline"
+          class="block font-medium leading-5 text-foreground underline-offset-2 hover:underline"
+          :class="compact ? 'text-xs' : 'text-sm'"
           >{{ model.name }}</a
         >
         <p class="mt-0.5 text-xs text-muted-foreground">

@@ -34,8 +34,6 @@ provide("toast", toast);
           Beta
         </span>
       </div>
-      <!-- Routed views teleport their header actions here. -->
-      <div id="app-header-actions" class="ml-auto flex items-center gap-1" />
     </header>
     <main class="flex min-h-0 flex-1 flex-col">
       <RouterView />

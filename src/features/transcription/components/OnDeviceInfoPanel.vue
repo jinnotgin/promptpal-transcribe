@@ -1,23 +1,15 @@
 <script setup>
-import { computed } from "vue";
 import { Settings, ShieldCheck, Trash2 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { describeRuntime } from "@/features/transcription/lib/onDeviceInfo.js";
+import ExecutionEnvSelect from "./ExecutionEnvSelect.vue";
 import TranscriptionModelStatus from "./TranscriptionModelStatus.vue";
 
-const props = defineProps({
+defineProps({
   open: { type: Boolean, default: false },
   /** Give the icon button an outline, for use in page content. */
   outlined: { type: Boolean, default: false },
@@ -42,10 +34,6 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["update:open", "update:executionEnv", "clearCache"]);
-
-const runtimeLabel = computed(() =>
-  describeRuntime(props.executionEnv, props.effectiveRuntime),
-);
 </script>
 
 <template>
@@ -106,29 +94,12 @@ const runtimeLabel = computed(() =>
           >
             Processing
           </h3>
-          <Select
+          <ExecutionEnvSelect
             :model-value="executionEnv"
+            :effective-runtime="effectiveRuntime"
             :disabled="isProcessing"
             @update:model-value="emit('update:executionEnv', $event)"
-          >
-            <SelectTrigger
-              class="h-9 text-sm"
-              aria-label="Transcription runtime"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">Automatic</SelectItem>
-              <SelectItem value="webgpu">Graphics card (WebGPU)</SelectItem>
-              <SelectItem value="wasm">Processor (WebAssembly)</SelectItem>
-            </SelectContent>
-          </Select>
-          <p
-            v-if="executionEnv === 'auto'"
-            class="text-xs text-muted-foreground"
-          >
-            Using your {{ runtimeLabel }}.
-          </p>
+          />
         </div>
       </div>
 

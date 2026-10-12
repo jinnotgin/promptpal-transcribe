@@ -680,7 +680,7 @@ function classifyLiveError(err) {
     return {
       code: "ASR_FAILED",
       message:
-        "Transcription model failed. Try switching the runtime in settings.",
+        "Transcription model failed. Try another processing option below.",
       recoverable: true,
     };
   }

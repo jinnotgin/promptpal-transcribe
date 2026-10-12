@@ -700,8 +700,8 @@ function classifyError(err) {
     return {
       code: "ASR_FAILED",
       message: msg.includes("ASR_EMPTY_RESULT")
-        ? "The transcription model finished but did not produce readable text. Try switching runtime in settings or using a clearer audio sample."
-        : "Transcription model failed. Try switching the runtime in settings.",
+        ? "The transcription model finished but did not produce readable text. Try another processing option below, or a clearer audio sample."
+        : "Transcription model failed. Try another processing option below.",
       recoverable: true,
     };
   }
