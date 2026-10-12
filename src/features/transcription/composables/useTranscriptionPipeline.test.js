@@ -433,5 +433,57 @@ describe("useTranscriptionPipeline uploaded media", () => {
       expect(mocks.diarizationInit).not.toHaveBeenCalled();
       expect(store.processPhase).toBe("complete");
     });
+
+    it("reports a finished reprocess as complete", async () => {
+      const store = makeStore();
+
+      const outcome = await useTranscriptionPipeline(
+        store,
+      ).reprocessFromManifest("live-record", liveManifest, { language: "en" });
+
+      expect(outcome).toBe("complete");
+    });
+
+    it("stops writing the transcript once the reprocess is cancelled", async () => {
+      const store = makeStore();
+      const pipeline = useTranscriptionPipeline(store);
+      mocks.transcribeWindow.mockImplementationOnce(async () => {
+        pipeline.cancel();
+        return [
+          {
+            id: "late",
+            text: "arrived after cancel",
+            start: 0,
+            end: 1,
+            speaker: null,
+            words: [],
+          },
+        ];
+      });
+
+      const outcome = await pipeline.reprocessFromManifest(
+        "live-record",
+        liveManifest,
+        { language: "en" },
+      );
+
+      expect(outcome).toBe("cancelled");
+      expect(store.segments).toEqual([]);
+      expect(mocks.transcribeWindow).toHaveBeenCalledTimes(1);
+      expect(store.processPhase).not.toBe("complete");
+    });
+
+    it("reports a reprocess that throws as failed", async () => {
+      const store = makeStore();
+      mocks.getPartBlob.mockRejectedValueOnce(new Error("Part missing"));
+
+      const outcome = await useTranscriptionPipeline(
+        store,
+      ).reprocessFromManifest("live-record", liveManifest, { language: "en" });
+
+      expect(outcome).toBe("failed");
+      expect(store.processPhase).toBe("error");
+      expect(store.error).toBeTruthy();
+    });
   });
 });

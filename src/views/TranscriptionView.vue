@@ -57,6 +57,7 @@ import { useTranscriptionStore } from "@/features/transcription/stores/transcrip
 import { useRuntimeDetection } from "@/features/transcription/composables/useRuntimeDetection";
 import { useModelManager } from "@/features/transcription/composables/useModelManager";
 import { useTranscriptionPipeline } from "@/features/transcription/composables/useTranscriptionPipeline";
+import { useTranscriptReprocess } from "@/features/transcription/composables/useTranscriptReprocess.js";
 import { useTranscriptionExport } from "@/features/transcription/composables/useTranscriptionExport";
 import { useTranscriptionHistory } from "@/features/transcription/composables/useTranscriptionHistory";
 import { useTranscriptionAudioAssets } from "@/features/transcription/composables/useTranscriptionAudioAssets.js";
@@ -106,6 +107,8 @@ const router = useRouter();
 useRuntimeDetection(store);
 const modelManager = useModelManager(store);
 const pipeline = useTranscriptionPipeline(store);
+const transcriptReprocess = useTranscriptReprocess({ store, pipeline });
+const isReprocessing = transcriptReprocess.isReprocessing;
 const livePipeline = useLivePipeline(store);
 const microphoneDevices = useMicrophoneDevices(store);
 const transcriptionExport = useTranscriptionExport(store);
@@ -580,7 +583,8 @@ function resetWorkingTranscriptState() {
   playbackProgress.value = 0;
   currentPlaybackTime.value = 0;
   isAudioPlaying.value = false;
-  isReprocessing.value = false;
+  // Leaving the recording stops its reprocess without touching what loads next.
+  transcriptReprocess.abandon();
   isReprocessOptionsOpen.value = false;
   isReprocessBannerDismissed.value = false;
 }
@@ -711,6 +715,7 @@ async function refreshHistorySummaries() {
  * @param {import('@/features/transcription/lib/transcriptionDb').TranscriptHistoryEntry} record
  */
 async function hydrateFromRecord(record) {
+  transcriptReprocess.abandon();
   isHydratingHistory.value = true;
   try {
     store.clearFile();
@@ -889,7 +894,7 @@ function scheduleHistoryPersist() {
 
 function handleCancel() {
   if (isReprocessing.value) {
-    pipeline.cancel();
+    transcriptReprocess.cancel();
   } else if (store.liveMode) {
     livePipeline.cancel();
   } else {
@@ -1014,7 +1019,6 @@ const canDownloadLiveRecording = computed(
     showTranscriptResult.value &&
     hasDownloadableLiveRecordingAudio.value,
 );
-const isReprocessing = ref(false);
 const isReprocessOptionsOpen = ref(false);
 /** Hides the reprocess banner for the open recording only; not saved. */
 const isReprocessBannerDismissed = ref(false);
@@ -1069,32 +1073,35 @@ async function handleReprocess() {
   if (!activeAudioManifest.value || !activeTranscriptId.value) return;
   const options = { ...reprocessOptions };
   isReprocessOptionsOpen.value = false;
-  isReprocessing.value = true;
-  try {
-    await pipeline.reprocessFromManifest(
-      activeTranscriptId.value,
-      activeAudioManifest.value,
-      options,
-    );
-  } finally {
-    isReprocessing.value = false;
-  }
+  const { status, error } = await transcriptReprocess.run(
+    activeTranscriptId.value,
+    activeAudioManifest.value,
+    options,
+  );
 
-  if (store.processPhase === "complete" && store.segments.length) {
-    hasReprocessedLiveRecording.value = true;
-    activeTranscriptLanguage.value = options.language;
-    activeSpeakerOptions.value = normalizeSpeakerOptions({
-      scale: options.speakerScale,
-      count: options.speakerCount,
+  if (status === "failed") {
+    const reason = error?.message?.trim() || "Something went wrong";
+    toast?.({
+      title: "Couldn't reprocess this recording",
+      description: `${/[.!?]$/.test(reason) ? reason : `${reason}.`} Your original transcript is unchanged.`,
     });
-    await persistTranscriptRecord({
-      audioManifest: activeAudioManifest.value,
-      audioFileName: store.fileName,
-      audioMimeType: activeAudioManifest.value?.parts[0]?.mimeType ?? null,
-      isLiveRecording: true,
-      hasReprocessedLiveRecording: true,
-    });
+    return;
   }
+  if (status !== "complete" || !store.segments.length) return;
+
+  hasReprocessedLiveRecording.value = true;
+  activeTranscriptLanguage.value = options.language;
+  activeSpeakerOptions.value = normalizeSpeakerOptions({
+    scale: options.speakerScale,
+    count: options.speakerCount,
+  });
+  await persistTranscriptRecord({
+    audioManifest: activeAudioManifest.value,
+    audioFileName: store.fileName,
+    audioMimeType: activeAudioManifest.value?.parts[0]?.mimeType ?? null,
+    isLiveRecording: true,
+    hasReprocessedLiveRecording: true,
+  });
 }
 
 async function handleClearCache() {
@@ -2601,7 +2608,6 @@ onUnmounted(() => {
           :transcription-progress="store.transcriptionProgress"
           :diarization-progress="store.diarizationProgress"
           :diarization-load-progress="store.diarizationLoadProgress"
-          :cancelable="!isReprocessing"
           @cancel="handleCancel"
         />
 

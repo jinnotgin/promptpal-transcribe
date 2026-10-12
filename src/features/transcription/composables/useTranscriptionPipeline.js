@@ -457,7 +457,12 @@ export function useTranscriptionPipeline(store) {
     return new DOMException("Aborted", "AbortError");
   }
 
+  // Counts cancels so a reprocess can tell it was cancelled even after
+  // clearProcessingState() resets store.isCancelled.
+  let cancelCount = 0;
+
   function cancel() {
+    cancelCount += 1;
     store.isCancelled = true;
     abort();
     store.clearProcessingState();
@@ -470,6 +475,7 @@ export function useTranscriptionPipeline(store) {
    * @param {string} transcriptId
    * @param {import('@/features/transcription/lib/transcriptAudioManifest.js').TranscriptAudioManifest} manifestValue
    * @param {RecordingOptions} [options]
+   * @returns {Promise<"complete" | "cancelled" | "failed">}
    */
   async function reprocessFromManifest(
     transcriptId,
@@ -483,6 +489,10 @@ export function useTranscriptionPipeline(store) {
       ...options,
     });
     const startTime = Date.now();
+    const startCancelCount = cancelCount;
+    const throwIfCancelled = () => {
+      if (store.isCancelled || cancelCount !== startCancelCount) throw abort();
+    };
     store.clearProcessingState();
     store.segments = [];
     store.speakerNames = {};
@@ -497,7 +507,7 @@ export function useTranscriptionPipeline(store) {
       if (selection.diarization) {
         await modelManager.ensureDiarizationModel(selection.assetKeys);
       }
-      if (store.isCancelled) throw abort();
+      throwIfCancelled();
 
       let transcriptRows = [];
       let globalWindowIndex = 0;
@@ -509,6 +519,7 @@ export function useTranscriptionPipeline(store) {
 
       for (const part of manifest.parts) {
         const blob = await audioAssets.getPartBlob(transcriptId, part);
+        throwIfCancelled();
         const file = new File([blob], `transcript-part-${part.index}`, {
           type: part.mimeType,
         });
@@ -524,7 +535,9 @@ export function useTranscriptionPipeline(store) {
             preparation = windows[index + 1]
               ? prepare(windows[index + 1])
               : null;
+            throwIfCancelled();
             const detected = await vad.detectWindow(pcm);
+            throwIfCancelled();
             pcm = detected.pcm;
             if (detected.regions.length) {
               const rows = await asr.transcribeWindow(pcm, detected.regions, {
@@ -533,6 +546,7 @@ export function useTranscriptionPipeline(store) {
                 totalWindows,
                 speech: detected.speech,
               });
+              throwIfCancelled();
               transcriptRows = asr.mergeSegments([...transcriptRows, ...rows]);
               store.setSegments(transcriptRows);
             }
@@ -552,6 +566,7 @@ export function useTranscriptionPipeline(store) {
         let diarizationIndex = 0;
         for (const part of manifest.parts) {
           const blob = await audioAssets.getPartBlob(transcriptId, part);
+          throwIfCancelled();
           const file = new File([blob], `transcript-part-${part.index}`, {
             type: part.mimeType,
           });
@@ -566,6 +581,7 @@ export function useTranscriptionPipeline(store) {
               preparation = windows[index + 1]
                 ? prepareCommittedWindow(windows[index + 1])
                 : null;
+              throwIfCancelled();
               await diarization.processWindow(pcm, {
                 windowIndex: diarizationIndex,
                 totalWindows,
@@ -583,6 +599,7 @@ export function useTranscriptionPipeline(store) {
         });
       }
 
+      throwIfCancelled();
       store.setSegments(transcriptRows);
       store.processPhase = "complete";
       trackAnalyticsEvent("transcription_reprocess_completed", {
@@ -592,15 +609,21 @@ export function useTranscriptionPipeline(store) {
         durationMs: Date.now() - startTime,
         segmentCount: transcriptRows.length,
       });
+      return "complete";
     } catch (err) {
       abort();
-      if (err?.name === "AbortError" || store.isCancelled) {
+      if (
+        err?.name === "AbortError" ||
+        store.isCancelled ||
+        cancelCount !== startCancelCount
+      ) {
         store.clearProcessingState();
-        return;
+        return "cancelled";
       }
       console.error("Manifest reprocess pipeline error:", err);
       store.processPhase = "error";
       store.error = classifyError(err);
+      return "failed";
     }
   }
 
