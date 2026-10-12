@@ -4,12 +4,17 @@
  */
 
 import { FFmpeg, FFFSType } from "@ffmpeg/ffmpeg";
+import {
+  createFfmpegLogTail,
+  runFfmpegStep,
+} from "@/features/transcription/lib/ffmpegRun.js";
 
 /** @type {FFmpeg | null} */
 let ffmpeg = null;
 let cancelled = false;
 let mountedInputPath = null;
 const INPUT_MOUNT = "/mounted-input";
+const logTail = createFfmpegLogTail();
 const workerScope =
   /** @type {{ postMessage: (message: unknown, transfer?: Transferable[]) => void, onmessage: ((ev: MessageEvent) => unknown) | null }} */ (
     self
@@ -18,6 +23,7 @@ const workerScope =
 async function initFFmpeg() {
   if (ffmpeg) return;
   ffmpeg = new FFmpeg();
+  ffmpeg.on("log", ({ message }) => logTail.push(message));
   await ffmpeg.load({
     coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js",
     wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm",
@@ -33,7 +39,13 @@ async function openFile(file, durationHint) {
   } catch {
     // The directory can survive an unmount in the same worker session.
   }
-  await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, INPUT_MOUNT);
+  try {
+    await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, INPUT_MOUNT);
+  } catch (error) {
+    throw new Error(
+      `Could not open the source file for decoding (${errorMessage(error)})`,
+    );
+  }
   mountedInputPath = `${INPUT_MOUNT}/${file.name}`;
   const hintedDuration = Number(durationHint);
   return {
@@ -58,18 +70,20 @@ async function closeFile() {
 async function probeDuration(inputPath) {
   const outputName = "duration.txt";
   try {
-    await ffmpeg.ffprobe([
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "default=noprint_wrappers=1:nokey=1",
-      inputPath,
-      "-o",
-      outputName,
-    ]);
-    const output = await ffmpeg.readFile(outputName, "utf8");
+    await runFfmpegStep("Duration probe", logTail, () =>
+      ffmpeg.ffprobe([
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        inputPath,
+        "-o",
+        outputName,
+      ]),
+    );
+    const output = await readOutput(outputName, "Duration probe", "utf8");
     const duration = Number(String(output).trim());
     if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error("Unable to determine media duration");
@@ -85,27 +99,29 @@ async function prepareWindow({ start, duration, windowIndex }) {
   cancelled = false;
   const outputName = `pcm-window-${windowIndex}.f32`;
   try {
-    await ffmpeg.exec([
-      "-ss",
-      String(Math.max(0, Number(start) || 0)),
-      "-i",
-      mountedInputPath,
-      "-t",
-      String(Math.max(0, Number(duration) || 0)),
-      "-vn",
-      "-acodec",
-      "pcm_f32le",
-      "-ar",
-      "16000",
-      "-ac",
-      "1",
-      "-f",
-      "f32le",
-      outputName,
-    ]);
+    await runFfmpegStep("Audio decode", logTail, () =>
+      ffmpeg.exec([
+        "-ss",
+        String(Math.max(0, Number(start) || 0)),
+        "-i",
+        mountedInputPath,
+        "-t",
+        String(Math.max(0, Number(duration) || 0)),
+        "-vn",
+        "-acodec",
+        "pcm_f32le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-f",
+        "f32le",
+        outputName,
+      ]),
+    );
     if (cancelled) throw new DOMException("Aborted", "AbortError");
     return {
-      pcmData: await readArrayBuffer(outputName),
+      pcmData: await readArrayBuffer(outputName, "Audio decode"),
     };
   } finally {
     await deleteFileIfPresent(outputName);
@@ -117,34 +133,36 @@ async function prepareWindowWithProxy(payload) {
   if (!mountedInputPath) throw new Error("No media file is mounted");
   const outputName = `proxy-part-${payload.windowIndex}.webm`;
   try {
-    await ffmpeg.exec([
-      "-ss",
-      String(Math.max(0, Number(payload.commitStart) || 0)),
-      "-i",
-      mountedInputPath,
-      "-t",
-      String(Math.max(0, Number(payload.commitDuration) || 0)),
-      "-vn",
-      "-map_metadata",
-      "-1",
-      "-ac",
-      "1",
-      "-ar",
-      "16000",
-      "-codec:a",
-      "libopus",
-      "-b:a",
-      "64k",
-      "-vbr",
-      "on",
-      "-f",
-      "webm",
-      outputName,
-    ]);
+    await runFfmpegStep("Review proxy encode", logTail, () =>
+      ffmpeg.exec([
+        "-ss",
+        String(Math.max(0, Number(payload.commitStart) || 0)),
+        "-i",
+        mountedInputPath,
+        "-t",
+        String(Math.max(0, Number(payload.commitDuration) || 0)),
+        "-vn",
+        "-map_metadata",
+        "-1",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-codec:a",
+        "libopus",
+        "-b:a",
+        "64k",
+        "-vbr",
+        "on",
+        "-f",
+        "webm",
+        outputName,
+      ]),
+    );
     if (cancelled) throw new DOMException("Aborted", "AbortError");
     return {
       ...prepared,
-      proxyData: await readArrayBuffer(outputName),
+      proxyData: await readArrayBuffer(outputName, "Review proxy encode"),
       mimeType: "audio/webm;codecs=opus",
     };
   } finally {
@@ -152,9 +170,27 @@ async function prepareWindowWithProxy(payload) {
   }
 }
 
-/** @param {string} name */
-async function readArrayBuffer(name) {
-  const outputData = await ffmpeg.readFile(name);
+/**
+ * Read an FFmpeg output file, replacing the opaque Emscripten "FS error"
+ * with the stage that failed to produce it.
+ * @param {string} name
+ * @param {string} stage
+ * @param {"utf8" | "binary"} [encoding]
+ */
+async function readOutput(name, stage, encoding = "binary") {
+  try {
+    return await ffmpeg.readFile(name, encoding);
+  } catch {
+    const detail = logTail.lines().slice(-3).join(" | ");
+    throw new Error(
+      `${stage} produced no output${detail ? `: ${detail}` : ""}`,
+    );
+  }
+}
+
+/** @param {string} name @param {string} stage */
+async function readArrayBuffer(name, stage) {
+  const outputData = await readOutput(name, stage);
   const bytes =
     typeof outputData === "string"
       ? new TextEncoder().encode(outputData)
