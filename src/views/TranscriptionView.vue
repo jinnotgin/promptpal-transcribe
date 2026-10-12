@@ -595,6 +595,12 @@ function handleClearFile() {
   store.clearFile();
 }
 
+/** Leave the picked file or live mic and return to the start choice. */
+function handleBackToStartChoice() {
+  if (store.liveMode) store.setLiveMode(false);
+  else handleClearFile();
+}
+
 async function handleStartOver() {
   if (store.liveMode) {
     livePipeline.cancel();
@@ -2436,8 +2442,31 @@ onUnmounted(() => {
             </template>
 
             <template v-else>
+              <!-- Picked file or live mic: one Back row, same in both modes -->
+              <div
+                v-if="store.liveMode || store.file"
+                class="mb-6 flex items-center justify-between gap-3"
+              >
+                <button
+                  type="button"
+                  class="-ml-1.5 inline-flex items-center gap-1 rounded-md py-1.5 pl-1 pr-3 text-[15px] font-medium text-muted-foreground transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                  :disabled="store.isProcessing"
+                  @click="handleBackToStartChoice"
+                >
+                  <ChevronLeft class="h-[18px] w-[18px]" />
+                  Back
+                </button>
+                <OnDeviceInfoPanel
+                  v-model:open="isOnDeviceInfoOpen"
+                  v-bind="onDeviceInfoProps"
+                  outlined
+                  @update:execution-env="store.setExecutionEnv($event)"
+                  @clear-cache="handleClearCache"
+                />
+              </div>
+
               <!-- Headline -->
-              <div v-if="!store.liveMode" :class="store.file ? 'mb-8' : 'mb-4'">
+              <div v-else class="mb-4">
                 <div class="flex items-start justify-between gap-3">
                   <h1 class="text-2xl font-semibold">
                     What's said stays here.
@@ -2485,6 +2514,12 @@ onUnmounted(() => {
 
               <!-- File upload mode (default path) -->
               <template v-if="!store.liveMode">
+                <div v-if="store.file" class="mb-5">
+                  <h1 class="text-2xl font-semibold">Ready to transcribe</h1>
+                  <p class="mt-1 text-sm text-muted-foreground">
+                    Check the settings below, then start.
+                  </p>
+                </div>
                 <TranscriptionDropZone
                   :file="store.file"
                   :is-processing="store.isProcessing"
@@ -2697,23 +2732,6 @@ onUnmounted(() => {
 
               <!-- Live microphone mode (idle, pre-start) -->
               <template v-else>
-                <div class="mb-5 mt-6 flex items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-                    @click="store.setLiveMode(false)"
-                  >
-                    <ChevronLeft class="h-4 w-4" />
-                    Back
-                  </button>
-                  <OnDeviceInfoPanel
-                    v-model:open="isOnDeviceInfoOpen"
-                    v-bind="onDeviceInfoProps"
-                    outlined
-                    @update:execution-env="store.setExecutionEnv($event)"
-                    @clear-cache="handleClearCache"
-                  />
-                </div>
                 <TranscriptionLanguageOptions
                   class="mx-auto mb-3 max-w-md"
                   :language="store.transcriptionLanguage"
