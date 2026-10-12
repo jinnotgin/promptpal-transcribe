@@ -595,6 +595,16 @@ function handleClearFile() {
   store.clearFile();
 }
 
+/**
+ * Return from a failed run to the screen it started from, keeping the
+ * picked file so a new processing choice can be tried on it.
+ */
+function handleRetryAfterError() {
+  store.clearProcessingState();
+  store.segments = [];
+  if (store.liveMode) store.clearLiveState();
+}
+
 /** Leave the picked file or live mic and return to the start choice. */
 function handleBackToStartChoice() {
   if (store.liveMode) store.setLiveMode(false);
@@ -2843,11 +2853,13 @@ onUnmounted(() => {
 
           <div
             v-if="store.processPhase === 'error' && store.error"
-            class="mx-auto mt-8 max-w-xl rounded-lg border border-red-200 bg-red-50 p-4 text-sm"
+            class="mx-auto mt-8 w-[calc(100%-2rem)] max-w-md rounded-xl border border-red-200 bg-red-50 p-5 text-sm"
           >
-            <p class="font-medium text-red-800">Transcription failed</p>
-            <p class="mt-1 text-xs text-red-800">{{ store.error.message }}</p>
-            <div class="mt-3 max-w-xs">
+            <p class="text-base font-medium text-red-800">
+              Transcription failed
+            </p>
+            <p class="mt-1.5 text-sm text-red-800">{{ store.error.message }}</p>
+            <div class="mt-4 max-w-xs">
               <p class="mb-1.5 text-xs font-medium text-foreground">
                 Processing
               </p>
@@ -2857,21 +2869,14 @@ onUnmounted(() => {
                 @update:model-value="store.setExecutionEnv($event)"
               />
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              class="mt-3"
-              @click="
-                store.clearProcessingState();
-                if (store.liveMode) {
-                  store.clearLiveState();
-                } else {
-                  store.clearFile();
-                }
-              "
-            >
-              Try Again
-            </Button>
+            <div class="mt-4 flex items-center gap-2">
+              <Button size="sm" @click="handleRetryAfterError">
+                Try again
+              </Button>
+              <Button variant="outline" size="sm" @click="handleStartOver">
+                Cancel
+              </Button>
+            </div>
           </div>
           <AppFooter class="mt-auto" />
         </div>
