@@ -31,6 +31,10 @@ VITE_SITE_URL=https://example.com npm run build
 
 Without it, the share tags use relative paths, which most social platforms ignore.
 
+The build leaves out ONNX Runtime's WASM binaries (24-28 MB each), which keeps every file under
+static hosts' size limits such as Cloudflare Pages' 25 MiB. The app loads them from jsDelivr at
+runtime instead; see `scripts/dropOrtWasm.js`.
+
 ## Validation
 
 ```bash
@@ -47,5 +51,6 @@ Transcript history and downloaded model assets are stored in IndexedDB for the c
 origin. A different hostname or port has separate storage, and clearing site data removes both
 history and cached models.
 
-The app downloads public model assets from Hugging Face and the FFmpeg WASM runtime from unpkg when
-they are not already cached.
+The app downloads public model assets from Hugging Face, the ONNX Runtime WASM runtime from
+jsDelivr, and the FFmpeg WASM runtime from unpkg when they are not already cached. A
+Content-Security-Policy or network filter must allow all three.
