@@ -15,8 +15,8 @@ export function applySiteUrl(html, siteUrl) {
     .replace(/content="\/og-image\.png"/g, `content="${base}/og-image.png"`)
     .replace(
       "</head>",
-      `<meta property="og:url" content="${base}/" />\n` +
-        `<link rel="canonical" href="${base}/" />\n</head>`,
+      `<meta property="og:url" content="${base}" />\n` +
+        `<link rel="canonical" href="${base}" />\n</head>`,
     );
 }
 

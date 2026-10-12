@@ -16,10 +16,10 @@ describe("applySiteUrl", () => {
       '<meta name="twitter:image" content="https://shhsaid.example/og-image.png" />',
     );
     expect(out).toContain(
-      '<meta property="og:url" content="https://shhsaid.example/" />',
+      '<meta property="og:url" content="https://shhsaid.example" />',
     );
     expect(out).toContain(
-      '<link rel="canonical" href="https://shhsaid.example/" />',
+      '<link rel="canonical" href="https://shhsaid.example" />',
     );
   });
 
