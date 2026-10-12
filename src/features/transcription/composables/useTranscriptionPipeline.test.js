@@ -144,6 +144,52 @@ function makeStore() {
   });
 }
 
+/**
+ * Make each window transcribe the words spoken in its read range around the
+ * 300 s seam, so the 3 s read overlap is transcribed by both windows. The
+ * second pass times words slightly differently, as a real re-read does.
+ */
+function transcribeAcrossSeam() {
+  const spoken = Array.from({ length: 14 }, (_, index) => ({
+    text: `w${index}`,
+    start: 296 + index * 0.4,
+    end: 296 + index * 0.4 + 0.3,
+  }));
+  mocks.transcribeWindow.mockImplementation(async (_pcm, _regions, options) => {
+    const readEnd = options.offset === 0 ? 300 : options.offset + 303;
+    const words = spoken
+      .filter((word) => word.start >= options.offset && word.end <= readEnd)
+      .map((word, index) => ({
+        ...word,
+        end:
+          word.end + (options.windowIndex % 2 ? (index % 2 ? 0.03 : -0.02) : 0),
+        utteranceId: options.windowIndex,
+      }));
+    if (!words.length) return [];
+    return [
+      {
+        id: `segment-${options.windowIndex}`,
+        text: words.map((word) => word.text).join(" "),
+        start: words[0].start,
+        end: words[words.length - 1].end,
+        speaker: null,
+        words,
+      },
+    ];
+  });
+  return spoken.map((word) => word.text);
+}
+
+/** @param {Array<{ words?: Array<{ text: string, utteranceId?: number }> }>} segments */
+function seamWords(segments) {
+  const words = segments.flatMap((segment) => segment.words || []);
+  const ids = words.map((word) => word.utteranceId);
+  return {
+    texts: words.map((word) => word.text),
+    runs: ids.filter((id, index) => id !== ids[index - 1]),
+  };
+}
+
 describe("useTranscriptionPipeline uploaded media", () => {
   beforeEach(() => {
     mocks.prepared = [];
@@ -239,6 +285,15 @@ describe("useTranscriptionPipeline uploaded media", () => {
     expect(store.processPhase).toBe("complete");
     expect(mocks.closed).toHaveBeenCalledOnce();
     expect(mocks.aborted).not.toHaveBeenCalled();
+  });
+
+  it("hands the window overlap from one window to the next at a single seam", async () => {
+    const spoken = transcribeAcrossSeam();
+    const store = makeStore();
+
+    await useTranscriptionPipeline(store).start();
+
+    expect(seamWords(store.segments)).toEqual({ texts: spoken, runs: [0, 1] });
   });
 
   it("feeds diarization committed ranges without repeating ASR overlap", async () => {
@@ -432,6 +487,22 @@ describe("useTranscriptionPipeline uploaded media", () => {
       expect(mocks.ensureDiarizationModel).not.toHaveBeenCalled();
       expect(mocks.diarizationInit).not.toHaveBeenCalled();
       expect(store.processPhase).toBe("complete");
+    });
+
+    it("hands the window overlap over at a single seam", async () => {
+      const spoken = transcribeAcrossSeam();
+      const store = makeStore();
+
+      await useTranscriptionPipeline(store).reprocessFromManifest(
+        "live-record",
+        liveManifest,
+        { language: "en", enableDiarization: false },
+      );
+
+      expect(seamWords(store.segments)).toEqual({
+        texts: spoken,
+        runs: [0, 1],
+      });
     });
 
     it("reports a finished reprocess as complete", async () => {

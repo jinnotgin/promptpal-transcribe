@@ -22,24 +22,123 @@ export function stitchSegments(chunkResults) {
   if (chunkResults.length === 0) return [];
   if (chunkResults.length === 1) return chunkResults[0].segments;
 
-  /** @type {TranscriptSegment[]} */
-  const stitched = [];
-
-  for (let i = 0; i < chunkResults.length; i++) {
-    const { segments } = chunkResults[i];
-
-    for (const seg of segments) {
-      // Deduplicate: skip if previous segment already covers this time
-      const last = stitched[stitched.length - 1];
-      if (last && seg.start < last.end && seg.text === last.text) {
-        continue;
-      }
-
-      stitched.push(seg);
-    }
+  let stitched = chunkResults[0].segments;
+  for (let i = 1; i < chunkResults.length; i++) {
+    const { chunk, segments } = chunkResults[i];
+    stitched = joinAtSeam(stitched, segments, {
+      start: chunk.start,
+      end: chunkResults[i - 1].chunk.end,
+    });
   }
-
   return stitched;
+}
+
+/**
+ * Join two transcription passes whose audio overlaps in `overlap` at one
+ * seam: words before it come from `earlier`, words after it from `later`.
+ * Merging both passes word by word would interleave their utterance ids,
+ * and the sentence builder starts a new row at every id change.
+ *
+ * The seam sits in the pause nearest the middle of the overlap, where both
+ * passes had audio context on either side, so no word is cut in half.
+ *
+ * @param {TranscriptSegment[]} earlier
+ * @param {TranscriptSegment[]} later
+ * @param {{ start: number, end: number }} overlap
+ * @returns {TranscriptSegment[]}
+ */
+export function joinAtSeam(earlier, later, overlap) {
+  if (!(overlap.end > overlap.start)) return [...earlier, ...later];
+  const earlierSpans = spansWithin(earlier, overlap);
+  const laterSpans = spansWithin(later, overlap);
+  // A pass that heard nothing in the overlap yields it to the other pass.
+  const seam = !earlierSpans.length
+    ? overlap.start
+    : !laterSpans.length
+      ? overlap.end
+      : findSeam([...earlierSpans, ...laterSpans], overlap);
+  return [
+    ...earlier.flatMap((segment) =>
+      keepWords(segment, (middle) => middle < seam),
+    ),
+    ...later.flatMap((segment) =>
+      keepWords(segment, (middle) => middle >= seam),
+    ),
+  ];
+}
+
+/**
+ * Word (or untimed row) time spans that touch the overlap.
+ * @param {TranscriptSegment[]} segments
+ * @param {{ start: number, end: number }} overlap
+ */
+function spansWithin(segments, overlap) {
+  return segments
+    .flatMap(
+      (segment) =>
+        /** @type {Array<{ start: number, end: number }>} */ (
+          segment.words?.length ? segment.words : [segment]
+        ),
+    )
+    .map((span) => ({ start: Number(span.start), end: Number(span.end) }))
+    .filter((span) => span.end > overlap.start && span.start < overlap.end);
+}
+
+/**
+ * @param {Array<{ start: number, end: number }>} spans
+ * @param {{ start: number, end: number }} overlap
+ */
+function findSeam(spans, overlap) {
+  const middle = (overlap.start + overlap.end) / 2;
+  spans.sort((a, b) => a.start - b.start);
+
+  // Without a pause, fall back to the middle and let word dedupe tidy up.
+  let seam = middle;
+  let distance = Infinity;
+  /**
+   * @param {number} from
+   * @param {number} to
+   */
+  const considerPause = (from, to) => {
+    if (to <= from) return;
+    const point = Math.min(Math.max(middle, from), to);
+    if (Math.abs(point - middle) < distance) {
+      seam = point;
+      distance = Math.abs(point - middle);
+    }
+  };
+  let cursor = overlap.start;
+  for (const span of spans) {
+    considerPause(cursor, span.start);
+    cursor = Math.max(cursor, span.end);
+  }
+  considerPause(cursor, overlap.end);
+  return seam;
+}
+
+/**
+ * @param {TranscriptSegment} segment
+ * @param {(middle: number) => boolean} keep
+ * @returns {TranscriptSegment[]}
+ */
+function keepWords(segment, keep) {
+  if (!segment.words?.length) {
+    return keep((segment.start + segment.end) / 2) ? [segment] : [];
+  }
+  const words = segment.words.filter((word) =>
+    keep((word.start + word.end) / 2),
+  );
+  if (words.length === segment.words.length) return [segment];
+  if (!words.length) return [];
+  return [
+    {
+      ...segment,
+      text: joinWordTexts(words.map((word) => word.text)),
+      start: words[0].start,
+      end: words[words.length - 1].end,
+      words,
+    },
+  ];
 }
 
 /**

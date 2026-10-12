@@ -16,6 +16,7 @@ import {
 import { ref } from "vue";
 import { useTranscriptionAudioAssets } from "./useTranscriptionAudioAssets.js";
 import { normalizeTranscriptAudioManifest } from "@/features/transcription/lib/transcriptAudioManifest.js";
+import { joinAtSeam } from "@/features/transcription/lib/timestampStitching.js";
 import {
   canUseStreamingWebmEncoder,
   useStreamingWebmEncoder,
@@ -316,7 +317,13 @@ export function useTranscriptionPipeline(store) {
         logWindowDiagnostics("asr", window, asrStartedAt, {
           segmentCount: windowRows.length,
         });
-        transcriptRows = asr.mergeSegments([...transcriptRows, ...windowRows]);
+        // Both windows transcribed the read overlap; keep one pass per side.
+        transcriptRows = asr.mergeSegments(
+          joinAtSeam(transcriptRows, windowRows, {
+            start: window.readStart,
+            end: window.commitStart,
+          }),
+        );
         store.setSegments(transcriptRows);
       }
 
@@ -547,7 +554,12 @@ export function useTranscriptionPipeline(store) {
                 speech: detected.speech,
               });
               throwIfCancelled();
-              transcriptRows = asr.mergeSegments([...transcriptRows, ...rows]);
+              transcriptRows = asr.mergeSegments(
+                joinAtSeam(transcriptRows, rows, {
+                  start: part.start + window.readStart,
+                  end: part.start + window.commitStart,
+                }),
+              );
               store.setSegments(transcriptRows);
             }
             globalWindowIndex += 1;
